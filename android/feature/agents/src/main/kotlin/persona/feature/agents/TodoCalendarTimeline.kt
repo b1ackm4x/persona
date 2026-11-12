@@ -127,6 +127,7 @@ internal fun TodoCalendarWeekStrip(
     val palette = PersonaTheme.palette
     val locale = LocalConfiguration.current.locales[0]
     val res = agentResources()
+    val mark = CalendarTokens.stripMark * textScale()
     Row(modifier.fillMaxWidth().padding(horizontal = Tokens.Space.xs, vertical = Tokens.Space.xxs).testTag("todo-calendar-strip")) {
         for (day in days) {
             val picked = day == anchor
@@ -150,7 +151,7 @@ internal fun TodoCalendarWeekStrip(
             ) {
                 Text(day.dayOfWeek.getDisplayName(TextStyle.NARROW, locale), style = PersonaTheme.type.micro, color = palette.ink3, maxLines = 1)
                 Box(
-                    Modifier.size(CalendarTokens.stripMark).clip(CircleShape).then(if (picked) Modifier.background(palette.accent) else Modifier),
+                    Modifier.size(mark).clip(CircleShape).then(if (picked) Modifier.background(palette.accent) else Modifier),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -162,6 +163,7 @@ internal fun TodoCalendarWeekStrip(
                             else -> palette.ink
                         },
                         maxLines = 1,
+                        softWrap = false,
                     )
                 }
                 Row(Modifier.height(CalendarTokens.stripDot), horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xxs)) {
@@ -206,7 +208,7 @@ internal fun TodoCalendarTimeline(
     val density = LocalDensity.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val haptics = rememberHaptics()
-    val gutter = if (narrow) CalendarTokens.gutterNarrow else CalendarTokens.gutter
+    val gutter = (if (narrow) CalendarTokens.gutterNarrow else CalendarTokens.gutter) * textScale()
     val hourPx = with(density) { CalendarTokens.hour.toPx() }
     // a block is as long as its height on the axis
     val blockMinutes = CalendarTokens.block / CalendarTokens.hour * 60f
@@ -389,10 +391,15 @@ internal fun TodoCalendarTimeline(
     }
 }
 
+/** How much the hours' column and the dates' circles grow with the text: as it does, up to [CalendarTokens.textScaleMaximum]. */
+@Composable
+private fun textScale(): Float = LocalDensity.current.fontScale.coerceIn(1f, CalendarTokens.textScaleMaximum)
+
 /** The week's days over their columns: the name and the date, today's in the accent; a tap shows that day. */
 @Composable
 private fun DayHeader(days: List<LocalDate>, today: LocalDate, narrow: Boolean, gutter: Dp, locale: Locale, onPick: (LocalDate) -> Unit) {
     val palette = PersonaTheme.palette
+    val mark = Tokens.Size.wellXS * textScale()
     Row(Modifier.fillMaxWidth().padding(vertical = Tokens.Space.xxs), verticalAlignment = Alignment.CenterVertically) {
         Spacer(Modifier.width(gutter))
         for (day in days) {
@@ -401,10 +408,10 @@ private fun DayHeader(days: List<LocalDate>, today: LocalDate, narrow: Boolean, 
             val name = day.dayOfWeek.getDisplayName(if (narrow) TextStyle.NARROW else TextStyle.SHORT, locale)
             val date = @Composable {
                 Box(
-                    Modifier.size(Tokens.Size.wellXS).clip(CircleShape).then(if (isToday) Modifier.background(palette.accent) else Modifier),
+                    Modifier.size(mark).clip(CircleShape).then(if (isToday) Modifier.background(palette.accent) else Modifier),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(day.dayOfMonth.toString(), style = PersonaTheme.type.labelSmall, color = if (isToday) palette.onAccent else palette.ink, maxLines = 1)
+                    Text(day.dayOfMonth.toString(), style = PersonaTheme.type.labelSmall, color = if (isToday) palette.onAccent else palette.ink, maxLines = 1, softWrap = false)
                 }
             }
             val cell = Modifier.weight(1f).clip(RoundedCornerShape(Tokens.Radius.control)).clickable { onPick(day) }

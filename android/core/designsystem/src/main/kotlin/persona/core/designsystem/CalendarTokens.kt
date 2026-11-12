@@ -24,6 +24,8 @@ object CalendarTokens {
     val nowDot = 8.dp
     /** Dots under a date of the week strip: at most this many. */
     const val stripDots = 3
+    /** How far the hours' column and the dates' circles on the axis grow with the text size, at the most. */
+    const val textScaleMaximum = 1.6f
     /** Lines a day of a phone's week shows in its All Day row: its to-dos, or one fewer and "+N". */
     const val allDayLines = 2
     /** A day of the month grid, at the least: its date and three lines. */

@@ -229,7 +229,7 @@ class TodoCalendarShotsTest {
     }
 
     /** Day and week (#4200): "dayview", "week", "weekdrag" (体检预约 carried to 11:00 on the 4th), "new" (a tap on the axis). */
-    private fun axis(scene: String, style: AppStyle, dark: Boolean) {
+    private fun axis(scene: String, style: AppStyle, dark: Boolean, suffix: String = "") {
         val api = Api(todos + Todo("t18", title = "准备评审材料", dueAt = at("2026-11-12T14:15")))
         val store = TasksStore(api, Connection(), CoroutineScope(Dispatchers.Unconfined))
         store.reloadTodos()
@@ -249,7 +249,7 @@ class TodoCalendarShotsTest {
         }
         fun save(node: androidx.compose.ui.test.SemanticsNodeInteraction = rule.onNodeWithTag("shot")) {
             val bitmap = node.captureToImage().asAndroidBitmap()
-            File(out(), "todo-calendar-$scene-${style.name.lowercase()}-${if (dark) "dark" else "light"}.png").outputStream()
+            File(out(), "todo-calendar-$scene-${style.name.lowercase()}-${if (dark) "dark" else "light"}$suffix.png").outputStream()
                 .use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         fun hours(h: Float) = with(rule.density) { (CalendarTokens.hour * h).toPx() }
@@ -395,6 +395,12 @@ class TodoCalendarShotsTest {
     @Test fun weekBriefDark() = axis("week", AppStyle.Brief, true)
     @Test fun weekBoard() = axis("week", AppStyle.Board, false)
     @Test fun weekBoardDark() = axis("week", AppStyle.Board, true)
+
+    /** The largest text: the hours, the blocks' titles and the week's day names grow; the blocks keep their height and cut their titles short. */
+    @Config(fontScale = 2f)
+    @Test fun dayViewGlassLargeText() = axis("dayview", AppStyle.Glass, false, suffix = "-large")
+    @Config(fontScale = 2f)
+    @Test fun weekGlassLargeText() = axis("week", AppStyle.Glass, false, suffix = "-large")
     @Test fun weekDragGlass() = axis("weekdrag", AppStyle.Glass, false)
     @Test fun weekDragGlassDark() = axis("weekdrag", AppStyle.Glass, true)
     @Test fun weekDragBrief() = axis("weekdrag", AppStyle.Brief, false)
