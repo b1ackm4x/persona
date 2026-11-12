@@ -108,8 +108,9 @@ import kotlin.math.roundToInt
 // The day's and the week's time axis (#4200, docs/assistant/todos.md "Calendar"): an All Day row, then the day's hours
 // with each timed to-do a block at its moment, those that overlap side by side; the day view has its week's strip above
 // it. A block is dragged to another moment or day (its top edge snaps to the quarter hour) or onto a day's All Day row;
-// a tap on the empty axis offers a new to-do due there. iOS TodoCalendarGrids (TodoDayTimeline / TodoWeekTimeline /
-// TodoWeekStrip) and TodoCalendarDrag, web TodoCalendarAxis.
+// a tap on the empty axis offers a new to-do due there. iOS TodoCalendarGrids (TodoCalendarTimeline /
+// TodoCalendarWeekStrip) and TodoCalendarView (TodoQuickAddSheet); iOS doesn't drag yet, so dragging follows the
+// web, web/src/lib/todo-calendar.ts (dropOnAxis / dropOnDay).
 
 /**
  * The day view's week (#4200): each day's narrow name, its date (the day shown in the accent, today in the accent's

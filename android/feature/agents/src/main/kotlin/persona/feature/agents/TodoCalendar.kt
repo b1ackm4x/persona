@@ -150,7 +150,7 @@ import kotlin.math.abs
 // with a due date, drawn as the list draws them (state, overdue, done, priority, reminder). The day and the week put them
 // on a time axis (TodoCalendarTimeline.kt); tapping a day of the month lists its to-dos; those without a due date are
 // counted under the calendar, a tap from the list. A to-do is moved to another day or moment by dragging it, or by
-// TalkBack's "Change Due Date…" (#2045). iOS TodoCalendarView / TodoCalendarGrids / TodoCalendarDrag, web TodoCalendar.
+// TalkBack's "Change Due Date…" (#2045). iOS TodoCalendarView / TodoCalendarGrids (no drag yet), web TodoCalendar.
 
 /** The to-dos page's two views: the list, or the calendar of those with a due date. */
 internal enum class TodosView { List, Calendar }
