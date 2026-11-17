@@ -142,6 +142,31 @@ class KnowledgeMapTest {
         assertEquals("P0 · Active", active.kids.first().kids.single().meta)
     }
 
+    @Test fun aFoldTheReaderMadeSurvivesTheDefaultMovingWhileDetailsArrive() {
+        fun tree(xCollapsed: Boolean, yCollapsed: Boolean) = MapNode("root", "Root", MapKind.Root, MapTone.Accent, listOf(
+            MapNode("x", "X", MapKind.Branch, MapTone.Accent, listOf(MapNode("x1", "X1", MapKind.Text, MapTone.Accent)), collapsed = xCollapsed),
+            MapNode("y", "Y", MapKind.Branch, MapTone.Accent, listOf(MapNode("y1", "Y1", MapKind.Text, MapTone.Accent)), collapsed = yCollapsed),
+        ))
+        // The reader opened X (closed by default) and closed Y (open by default); no choice on Z.
+        val before = tree(xCollapsed = true, yCollapsed = false)
+        assertEquals(setOf("root", "x"), KnowledgeMap.openNodes(before, opened = listOf("x"), closed = listOf("y")))
+        // The details come in and both defaults flip: the choices stand, a flip of the default would have undone them.
+        val after = tree(xCollapsed = false, yCollapsed = true)
+        assertEquals(setOf("root", "x"), KnowledgeMap.openNodes(after, opened = listOf("x"), closed = listOf("y")))
+        // Without a choice a node follows its default.
+        assertEquals(setOf("root", "y"), KnowledgeMap.openNodes(before, emptyList(), emptyList()))
+        assertEquals(setOf("root", "x"), KnowledgeMap.openNodes(after, emptyList(), emptyList()))
+    }
+
+    @Test fun projectsWithoutAnActiveOneHaveNoEmptyActiveBranch() {
+        val onlyDone = KnowledgeMap.projects(listOf(project("e", "Epsilon", "P0", "done")), emptyMap(), words)
+        assertEquals(listOf("Done"), onlyDone.kids.map { it.title })
+        val none = KnowledgeMap.projects(listOf(project("g", "Eta", "P0", "ignored"), project("h", "Theta", "P0", "merged")), emptyMap(), words)
+        assertTrue(none.kids.isEmpty())
+        assertTrue(KnowledgeMap.rows(none, KnowledgeMap.initiallyOpen(none)).isEmpty())
+        assertEquals(KnowledgeMap.ProjectStats(0, 0, 0), KnowledgeMap.projectStats(none))
+    }
+
     @Test fun aProjectsPartsCarryItsSummaryNotesAndLinks() {
         val log = listOf(
             "- 2026-11-02 09:15 · Persona · Shipped the **first** build",

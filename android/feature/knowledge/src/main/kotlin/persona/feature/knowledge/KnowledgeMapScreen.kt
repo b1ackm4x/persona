@@ -35,12 +35,14 @@ import persona.core.navigation.Navigator
  * its page, anything else folds; the chevron always folds.
  */
 @Composable
-internal fun KnowledgeMapScreen(model: KnowledgeMapViewModel, navigator: Navigator) {
+internal fun KnowledgeMapScreen(model: KnowledgeMapViewModel, navigator: Navigator, owner: String) {
     val page by model.page.collectAsStateWithLifecycle()
-    val owner = persona.core.designsystem.currentAssistant().id
     val words = rememberMapWords()
-    var topicToggles by rememberSaveable { mutableStateOf(listOf<String>()) }
-    var projectToggles by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // What the reader folded or opened, per side: kept as the choice itself, so the default moving as details arrive leaves it be.
+    var topicOpened by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var topicClosed by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var projectOpened by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var projectClosed by rememberSaveable { mutableStateOf(listOf<String>()) }
     var openPoint by remember(page.scope) { mutableStateOf<MapNode?>(null) }
     val side = page.side
     val tree by produceState<MapNode?>(null, page.entries, page.details, side, words) {
@@ -51,14 +53,17 @@ internal fun KnowledgeMapScreen(model: KnowledgeMapViewModel, navigator: Navigat
     }
     // The tree answers the side it was built for; the other's rows never sit under this side's chip while it loads.
     val root = tree?.takeIf { page.loaded && page.paired && it.id == if (side == MapSide.Topics) "root:topics" else "root:projects" }
-    val toggles = if (side == MapSide.Topics) topicToggles else projectToggles
-    val open = remember(root, toggles) {
-        root?.let { (KnowledgeMap.initiallyOpen(it) - toggles.toSet()) + (toggles.toSet() - KnowledgeMap.initiallyOpen(it)) }.orEmpty()
-    }
+    val opened = if (side == MapSide.Topics) topicOpened else projectOpened
+    val closed = if (side == MapSide.Topics) topicClosed else projectClosed
+    val open = remember(root, opened, closed) { root?.let { KnowledgeMap.openNodes(it, opened, closed) }.orEmpty() }
     val rows = remember(root, open) { root?.let { KnowledgeMap.rows(it, open) }.orEmpty() }
     val keys = remember(rows) { uniqueKeys(rows.map { it.node.id }) }
     fun toggle(id: String) {
-        if (side == MapSide.Topics) topicToggles = topicToggles.toggled(id) else projectToggles = projectToggles.toggled(id)
+        val wasOpen = id in open
+        val nowOpened = if (wasOpen) opened - id else opened + id
+        val nowClosed = if (wasOpen) closed + id else closed - id
+        if (side == MapSide.Topics) { topicOpened = nowOpened; topicClosed = nowClosed }
+        else { projectOpened = nowOpened; projectClosed = nowClosed }
     }
     val fresh = page.loading && root != null
     JListPage(stringResource(R.string.knowledge_map_title), onBack = navigator::back, largeTitle = false,
@@ -70,6 +75,10 @@ internal fun KnowledgeMapScreen(model: KnowledgeMapViewModel, navigator: Navigat
                 JChip(stringResource(R.string.knowledge_kind_topics), selected = side == MapSide.Topics, onClick = { model.side(MapSide.Topics) })
                 JChip(stringResource(R.string.knowledge_kind_projects), selected = side == MapSide.Projects, onClick = { model.side(MapSide.Projects) })
             }
+        }
+        // A refresh that failed keeps the outline; this says it could not be read again (as the list and the entry's page do).
+        if (page.paired && root != null) page.message?.let { message ->
+            item("reload-error") { JNotice(stringResource(message), Modifier.padding(vertical = Tokens.Space.s), status = Status.NeedsYou) }
         }
         when {
             !page.paired -> item("unpaired") {
@@ -109,8 +118,6 @@ internal fun KnowledgeMapScreen(model: KnowledgeMapViewModel, navigator: Navigat
         PointSheet(point, node.crumbs, node.links, { source -> openPoint = null; navigator.open(source, owner) }, { openPoint = null })
     }
 }
-
-private fun List<String>.toggled(id: String): List<String> = if (id in this) this - id else this + id
 
 /** A key per row: a point's id may repeat (or be empty), and a list refuses two rows with one key. */
 private fun uniqueKeys(ids: List<String>): List<String> {

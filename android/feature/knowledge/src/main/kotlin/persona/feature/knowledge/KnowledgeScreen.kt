@@ -79,7 +79,7 @@ internal fun KnowledgeScreen(model: KnowledgeViewModel, navigator: Navigator) {
     JListPage(stringResource(R.string.knowledge_title), onBack = navigator::back, largeTitle = true,
         refreshing = page.loading && shown, onRefresh = model::refresh,
         actions = {
-            JIconButton(PersonaIcons.knowledgeMap, stringResource(R.string.knowledge_map_open), { navigator.navigate(KnowledgeMapRoute) })
+            JIconButton(PersonaIcons.knowledgeMap, stringResource(R.string.knowledge_map_open), { navigator.navigate(KnowledgeMapRoute(owner)) })
             if (!search) JIconButton(PhIcons.FunnelSimple, page.filter.tag?.let { stringResource(R.string.knowledge_filter_tag_current, it) }
                 ?: stringResource(R.string.knowledge_filter_tag), { tagMenu = true },
                 badge = page.filter.tag != null)
@@ -325,8 +325,7 @@ internal fun KnowledgeDetailScreen(
         JListPage(entry?.name ?: stringResource(R.string.knowledge_detail_title), onBack = navigator::back,
             refreshing = page.loading && detail != null, onRefresh = model::refresh, state = listState,
             actions = {
-                // A topic's tags are the hub's own: it takes a name, a note and aliases, not hand-made tagging.
-                if (detail?.kind != KnowledgeKind.Topics.wire) JIconButton(PhIcons.Hash, stringResource(R.string.knowledge_tag_action), { model.dismissTagError(); editing = true }, enabled = detail != null)
+                JIconButton(PhIcons.Hash, stringResource(R.string.knowledge_tag_action), { model.dismissTagError(); editing = true }, enabled = detail != null)
                 JIconButton(PhIcons.ArrowClockwise, stringResource(R.string.knowledge_refresh_detail), model::refresh, enabled = !page.loading)
             }) {
             when {

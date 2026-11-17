@@ -87,7 +87,7 @@ class KnowledgeMapShotsTest {
         rule.setContent {
             PersonaTheme(darkTheme = dark, reduceMotion = true, style = style) {
                 Box(Modifier.testTag("shot").width(400.dp).height(1060.dp).background(PersonaTheme.palette.background)) {
-                    KnowledgeMapScreen(model, MapNoNavigator)
+                    KnowledgeMapScreen(model, MapNoNavigator, "assistant")
                 }
             }
         }

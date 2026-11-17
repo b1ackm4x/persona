@@ -356,7 +356,11 @@ internal const val MAP_DETAIL_PARALLEL = 6
 internal class KnowledgeMapViewModel(
     connection: KnowledgeConnection,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /** The assistant whose knowledge base the map was opened in: every read names it, whoever is current later. */
+    val owner: String? = null,
 ) : ViewModel() {
+    private val pins: kotlin.coroutines.CoroutineContext = ManagerPins.of(KnowledgePrefixes, owner, AssistantManagerChoice.current.value.hubId)
+        ?: kotlin.coroutines.EmptyCoroutineContext
     private data class Query(val side: MapSide = MapSide.Topics, val revision: Int = 0)
 
     private val query = MutableStateFlow(Query())
@@ -372,7 +376,7 @@ internal class KnowledgeMapViewModel(
             send(initial.copy(entries = shown?.entries.orEmpty(), details = shown?.details.orEmpty(), failed = shown?.failed ?: 0,
                 loaded = shown?.loaded == true))
             try {
-                val result = repository.list(side.kind)
+                val result = withContext(pins) { repository.list(side.kind) }
                 val entries = withContext(dispatcher) { result.items.filter { it.kind == side.kind.wire }.distinctBy { it.key } }
                 // Merged and "not a project" ones are not on the projects' map: their details are not read.
                 val wanted = entries.filter { side == MapSide.Topics || it.projectStatus !in setOf("ignored", "merged") }
@@ -388,7 +392,7 @@ internal class KnowledgeMapViewModel(
                 coroutineScope {
                     wanted.forEach { entry -> launch {
                         gate.withPermit {
-                            try { got[entry.id] = repository.detail(side.kind, entry.id) }
+                            try { got[entry.id] = withContext(pins) { repository.detail(side.kind, entry.id) } }
                             catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) { failures.incrementAndGet() }
                         }

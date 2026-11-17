@@ -17,8 +17,13 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 
 @Serializable @SerialName("persona.feature.knowledge.KnowledgeRoute") data object KnowledgeRoute : NavKey
-/** The knowledge map: topics and their points, or projects and their parts, as an outline (iOS `KBTopicsMap`, the web's Knowledge map). */
-@Serializable @SerialName("persona.feature.knowledge.KnowledgeMapRoute") data object KnowledgeMapRoute : NavKey
+/**
+ * The knowledge map: topics and their points, or projects and their parts, as an outline (iOS `KBTopicsMap`, the web's Knowledge map).
+ * Of [manager]'s knowledge base, the assistant current when it was opened (null from a page saved before it was kept: the one
+ * current when it opens again); switching assistants while it is open leaves it that one's.
+ */
+@Serializable @SerialName("persona.feature.knowledge.KnowledgeMapRoute")
+data class KnowledgeMapRoute(val manager: String? = null) : NavKey
 /**
  * An entry of [manager]'s knowledge base (the assistant current when it was opened; null from a page saved before it was
  * kept: the one current when it opens again). Its page stays that assistant's (docs/assistant/managers.md "Clients").
@@ -52,10 +57,11 @@ fun EntryProviderScope<NavKey>.knowledgeEntries(
         val model = viewModel(key = "knowledge:$assistant") { KnowledgeViewModel(connection) }
         KnowledgeScreen(model, navigator)
     }
-    entry<KnowledgeMapRoute> {
-        val assistant = persona.core.designsystem.currentAssistant().id
-        val model = viewModel(key = "knowledge-map:$assistant") { KnowledgeMapViewModel(connection) }
-        KnowledgeMapScreen(model, navigator)
+    entry<KnowledgeMapRoute> { route ->
+        val current = persona.core.designsystem.currentAssistant().id
+        val owner = route.manager ?: androidx.compose.runtime.saveable.rememberSaveable { current }
+        val model = viewModel(key = "knowledge-map:$owner") { KnowledgeMapViewModel(connection, owner = owner) }
+        KnowledgeMapScreen(model, navigator, owner)
     }
     entry<KnowledgeDetailRoute> { route ->
         val context = LocalContext.current.applicationContext

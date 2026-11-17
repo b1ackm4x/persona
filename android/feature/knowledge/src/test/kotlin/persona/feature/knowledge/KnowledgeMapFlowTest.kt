@@ -22,16 +22,19 @@ class KnowledgeMapFlowTest {
             KnowledgeEntry("projects", "p3", "Gamma", extra = "short · merged"),
         )
         var failList: Throwable? = null
+        val named = mutableListOf<String?>()
         val listed = mutableListOf<KnowledgeKind>()
         val read = mutableListOf<String>()
         private val running = AtomicInteger(0)
         var peak = 0
         override suspend fun list(kind: KnowledgeKind, tag: String?): KnowledgeList {
             listed += kind
+            named += currentCoroutineContext()[ManagerPins]?.manager(listOf("kb", kind.wire), "hub")
             failList?.let { throw it }
             return KnowledgeList(if (kind == KnowledgeKind.Topics) topicEntries else projectEntries)
         }
         override suspend fun detail(kind: KnowledgeKind, id: String): KnowledgeDetail {
+            named += currentCoroutineContext()[ManagerPins]?.manager(listOf("kb", kind.wire, id), "hub")
             val now = running.incrementAndGet()
             peak = maxOf(peak, now)
             try {
@@ -45,12 +48,12 @@ class KnowledgeMapFlowTest {
         override suspend fun search(query: String) = emptyList<KnowledgeHit>()
     }
 
-    private fun TestScope.withMap(fake: Fake?, block: TestScope.(KnowledgeMapViewModel, MutableStateFlow<KnowledgeRepository?>) -> Unit) {
+    private fun TestScope.withMap(fake: Fake?, owner: String? = null, block: TestScope.(KnowledgeMapViewModel, MutableStateFlow<KnowledgeRepository?>) -> Unit) {
         val connection = MutableStateFlow<KnowledgeRepository?>(fake)
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val store = androidx.lifecycle.ViewModelStore()
         try {
-            val model = KnowledgeMapViewModel(object : KnowledgeConnection { override val current = connection }, StandardTestDispatcher(testScheduler))
+            val model = KnowledgeMapViewModel(object : KnowledgeConnection { override val current = connection }, StandardTestDispatcher(testScheduler), owner)
             store.put("map", model)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { model.page.collect() }
             runCurrent()
@@ -137,5 +140,21 @@ class KnowledgeMapFlowTest {
             assertFalse(model.page.value.paired)
             assertTrue(model.page.value.entries.isEmpty())
         }
+    }
+
+    @Test fun theMapReadsTheAssistantItWasOpenedForWhoeverIsCurrentLater() = runTest {
+        AssistantManagerChoice.choose("hub", "m-work", "assistant")
+        try {
+            val fake = Fake(topics = 3)
+            withMap(fake, owner = "m-work") { model, _ ->
+                advanceUntilIdle()
+                // Another assistant made current while the map is open: its list, its details and its reload are still m-work's.
+                AssistantManagerChoice.choose("hub", null, "assistant")
+                model.refresh(); advanceUntilIdle()
+                assertEquals(3, model.page.value.details.size)
+                assertTrue(fake.named.isNotEmpty())
+                assertTrue("${fake.named}", fake.named.all { it == "m-work" })
+            }
+        } finally { AssistantManagerChoice.choose("hub", null, "assistant") }
     }
 }

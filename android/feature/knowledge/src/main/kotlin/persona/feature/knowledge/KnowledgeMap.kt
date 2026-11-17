@@ -292,8 +292,9 @@ internal object KnowledgeMap {
         val activeKids = groups.entries.mapIndexed { i, (g, nodes) ->
             MapNode("group:$g", g, MapKind.Group, MapTone.Accent, nodes, collapsed = i >= 2, meta = nodes.size.toString(), count = nodes.size)
         }
-        val branches = mutableListOf(MapNode("branch:active", words.active, MapKind.Branch, MapTone.Accent, activeKids,
-            meta = active.size.toString(), count = active.size))
+        val branches = mutableListOf<MapNode>()
+        if (active.isNotEmpty()) branches += MapNode("branch:active", words.active, MapKind.Branch, MapTone.Accent, activeKids,
+            meta = active.size.toString(), count = active.size)
         for ((key, title, tone) in listOf(Triple("done", words.done, MapTone.Green), Triple("paused", words.paused, MapTone.Orange))) {
             val these = sorted.filter { state(it) == key }
             if (these.isNotEmpty()) branches += MapNode("branch:$key", title, MapKind.Branch, tone,
@@ -370,6 +371,14 @@ internal object KnowledgeMap {
         walk(root)
         return out
     }
+
+    /**
+     * The nodes that are open: what [initiallyOpen] says, except where the reader chose. [opened] and [closed] are those
+     * choices, kept as what they chose (not as a flip of the default), so a default that moves while details arrive never
+     * turns a fold the reader made into its opposite.
+     */
+    fun openNodes(root: MapNode, opened: Collection<String>, closed: Collection<String>): Set<String> =
+        (initiallyOpen(root) - closed.toSet()) + opened.toSet()
 
     /** The numbers above the outline: topics, points and the sources they name. */
     data class TopicStats(val topics: Int, val points: Int, val sources: Int)
