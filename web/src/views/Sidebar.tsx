@@ -1,4 +1,4 @@
-import { storedValue, storeValue } from "../lib/compatibility";
+import { isPersonaStateDir, storedValue, storeValue } from "../lib/compatibility";
 // Beautiful UI's Sidebar Nav: workspace row, quick search, sections, one gliding highlight. Persona's main conversation
 // is the first entry (the app opens on the assistant); a new conversation and a new agent are the "+" of their sections (#1239).
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -10,7 +10,7 @@ import { getAgentListFilters, setAgentListFilters, useAgentListFilters } from ".
 import { AGENT_SORT_KEY, AGENT_SORTS, agentSort, byUpdated, machineTreeByUpdate, projectsByUpdate, repoMachinesByUpdate, todoTreeByUpdate, type AgentSort } from "../lib/agent-sort";
 import { AgentChatListRow, AgentFilterButton, AgentFilterChips } from "./agents/AgentChatListControls";
 import { agentGrouping, AGENT_GROUPINGS, type AgentGrouping, buildAgentGroups, buildSpaces, hostsOf, isQuiet, sessionHost, splitAgentSessions, type AgentGroup, type Space } from "../lib/agent-groups";
-import { buildRepoMachineTree } from "../lib/agent-repos";
+import { buildRepoMachineTree, hasWorkspacePin } from "../lib/agent-repos";
 import { useWorkspaceCatalog } from "../lib/workspace-catalog";
 import { keyedRefs } from "../lib/keyed-refs";
 import { buildMachineTree } from "../lib/herdr-tree";
@@ -30,11 +30,13 @@ import { conversationPage } from "../lib/conversation-page";
 import { href, navigate, onLinkClick, showsSession, type Route } from "../lib/router";
 import { retryFullAgentSessions, useAgentSessions, useFullAgentSessions } from "../lib/sessions";
 import { getState, refresh, refreshTodos, useHubUnreachable, useStore } from "../lib/store";
-import { conversationTitle } from "./assistant/conversations";
+import { SESSIONS_SIDE_FOLD_FEATURE } from "../lib/side-fold";
+import { conversationTitle, mergeConversations } from "./assistant/conversations";
+import { useShownManager } from "../lib/manager-choice";
 import { agentGroupLabel, agentTreeState, buildTodoTree, shareTree, worstTreeState, type TodoTree } from "../lib/todo-tree";
 import { openTodoFromTag, sortTodos, TODO_STATUS_INFO, type TodoStatus } from "../lib/todos";
 import type { Machine, Session } from "../lib/types";
-import { Collapse, cx, EASE, Kbd, Menu, sidebarFoldMotion, useMenu, type MenuItem } from "../ui/atoms";
+import { Collapse, cx, EASE, Kbd, Menu, sidebarFoldMotion, useMenu, useNow, type MenuItem } from "../ui/atoms";
 import { StatusMark } from "../ui/StatusMark";
 import { Icon, type IconName } from "../ui/icons";
 import { HerdrNotices as HerdrNoticesContent } from "./agents/HerdrNotices";
@@ -61,14 +63,16 @@ import { markAllSeenLabel, stateCount } from "../lib/state-labels";
 import { PagedSessionList, type PagedQuickFilters } from "./agents/PagedSessionList";
 import { ListError } from "../ui/ListError";
 import { SESSION_LIST_STYLE } from "../ui/list-metrics";
-import { runtimeActiveAt, runtimeIdentity, runtimeNeedsYou, runtimeOrder, runtimeParentIdentity, runtimePlace, runtimeRemoval, runtimeSessions } from "../lib/runtime-list";
-import { SESSIONS_CATALOG_FEATURE, SESSIONS_QUICK_FILTERS_FEATURE, SESSIONS_TODO_FEATURE, type GroupDimension, type TodoNames } from "../lib/session-groups";
-import { SESSIONS_LIST_FEATURE, type ListFilters } from "../lib/session-list";
+import { normalizePath } from "../lib/files";
+import { RUNTIME_AGENTS_PATH, supportsPagedAgents, runtimeActiveAt, runtimeAgents, runtimeIdentity, runtimeNeedsYou, runtimeOrder, runtimeParentIdentity, runtimePlace, runtimeRemoval } from "../lib/runtime-list";
+import { SESSIONS_CATALOG_FEATURE, SESSIONS_JUST_FINISHED_FEATURE, SESSIONS_QUICK_FILTERS_FEATURE, SESSIONS_TODO_FEATURE, type GroupDimension, type TodoNames } from "../lib/session-groups";
+import { type ListFilters } from "../lib/session-list";
 import { NoComputers, useAddComputer } from "./machines/AddComputerEntry";
 import { BADGE_CLASS, DOT_CLASS, type GoFn, GroupCount, holdsRow, morePagesMenu, type NavPage, type NodeMenuFn, type RegFn, rowKey, type RowMenuFn, Section, SidebarGroup, GroupFoldButton, useActiveKey, useGo, useNavPages } from "./SidebarParts";
 import { NavRow, PersonalAgents, PersonaRow, SessionRow, SubHeading } from "./SidebarRows";
 import { GroupBranch, LooseSection, MachineSection, RepoMachineSection, SessionTally, type SpaceMenuFn, type WorkspaceTreeActions, SpaceSection, TodoTreeView } from "./SidebarTree";
 import { CollapseButton, PagesTally } from "./SidebarRail";
+import type { PageSection } from "../lib/sidebar-pages";
 import { WindowedRows } from "./WindowedRows";
 import { scoped, useScope, useScoped, useScopedInteractions, useScopedMachines, useScopedTodos } from "../lib/current-assistant";
 import { AssistantSwitcher } from "./AssistantSwitcher";
@@ -270,11 +274,21 @@ function GlideHighlight({ box }: { box: ReturnType<typeof glideStore> }) {
 /** Recent's Show more / Show less, as the Agents block's Recent (not running) draws its own. */
 const MORE_BUTTON = "whitespace-nowrap rounded-[7px] px-2 py-1 text-left text-[12px] text-ink-3 hover:text-ink-2 [@media(pointer:coarse)]:min-h-11";
 
+const NO_CONVERSATIONS: Session[] = [];
+
 export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActions }: { route: Route; onSearch: () => void; onNewAgent: () => void; onNavigate?: () => void; workspaceActions?: WorkspaceTreeActions }) {
   const bindings = useBindings();
   const searchHint = jumpHint(bindings);
   const assistant = useStore((s) => s.assistant);
-  const { phase, online, total, main: mainConversation, pages, more } = useNavPages();
+  const manager = useShownManager();
+  const assistantMachine = assistant?.machine_id;
+  const liveChats = useStore((s) => (assistantMachine ? s.sessions[assistantMachine] ?? NO_CONVERSATIONS : NO_CONVERSATIONS));
+  const unarchived = useMemo(
+    () => mergeConversations([], assistant?.conversations ?? NO_CONVERSATIONS, liveChats, manager)
+      .filter((c) => !c.archived).length,
+    [assistant?.conversations, liveChats, manager],
+  );
+  const { phase, online, total, main: mainConversation, sections, more } = useNavPages();
   // a phone's drawer has the pages as two rows of icons, so its first screen reaches the Agents (#1996)
   const narrow = useMedia(NARROW);
   const activeKey = useActiveKey(route);
@@ -289,7 +303,7 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
   const directions = leaders.map((id) => assistant?.conversations.find((c) => c.session_id === id)).filter((c): c is Session => !!c);
   const recentCount = useRecentCount();
   const recentMore = useRecentMore();
-  const ownChats = recentConversations(assistant?.conversations ?? [], assistant?.main, leaders, assistant?.background_supervisor);
+  const ownChats = recentConversations(assistant?.conversations ?? [], assistant?.main, leaders, assistant?.background_supervisor, assistant?.recent_task_chats === true);
   const recent = ownChats.slice(0, recentCount * (1 + recentMore));
   const recentLeft = ownChats.length - recent.length;
   const recentLess = recentMore > 0 && ownChats.length > recentCount;
@@ -306,8 +320,6 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
   // 最近 folds on its own too (#6228): the choice is kept in this browser, and it opens by itself while it holds the
   // open conversation, so folding never hides where a message lands. The Agents block's Recent uses another key.
   const [recentFolded, toggleRecent] = useFolded("recent-chats", false, { holds: recent.some((c) => activeKey === `j:${c.session_id}`) });
-  // the pages fold under their own title (#2524); the drawer's grid of icons doesn't
-  const [pagesFolded, togglePages] = useFolded("pages", false, { all: false, holds: more.some((p) => p.k === activeKey) });
   const { nav, reg, hover, highlight } = useGlide(activeKey);
   useStickyTop(nav);
   const go = useGo(onNavigate);
@@ -349,13 +361,11 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
           <PersonaRow reg={reg} hover={hover} active={activeKey === "persona"} go={go} main={mainConversation} chord={bindings.persona} onMenu={onConvMenu} />
           <span aria-hidden data-persona-divider className="mx-2 my-1 h-px shrink-0 bg-line" />
         </div>
-        {narrow && <NavGrid pages={pages} more={more} activeKey={activeKey} go={go} onNavigate={onNavigate} />}
-        {!narrow && (
-          <Section title={t("sidebar.pages")} folded={pagesFolded} onToggle={togglePages} right={pagesFolded ? <PagesTally pages={[...pages, ...more]} /> : undefined} first>
-            {pages.map((p) => <NavRow key={p.k} {...p} reg={reg} hover={hover} active={activeKey === p.k} go={go} />)}
-            {more.length > 0 && <MorePages more={more} reg={reg} hover={hover} activeKey={activeKey} go={go} />}
-          </Section>
-        )}
+        {/* a phone's drawer has Pages as its grid of icons; every other group (#9071) is a section, as on a wide screen */}
+        {narrow && <NavGrid pages={sections.find((g) => !g.id)?.pages ?? []} more={more} activeKey={activeKey} go={go} onNavigate={onNavigate} />}
+        {sections
+          .filter((g) => (g.id ? g.pages.length > 0 : !narrow))
+          .map((g, i) => <PageGroup key={g.id || "pages"} group={g} more={g.id ? [] : more} first={i === 0 && !narrow} reg={reg} hover={hover} activeKey={activeKey} go={go} />)}
 
         {chats && (
           <Section
@@ -378,30 +388,48 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
               </>
             }
           >
-            {directions.length > 0 && <SubHeading label={t("sidebar.directions")} />}
-            {/* each 常驻 row folds open to its tasks (#4352) */}
-            {directions.map((c) => <SidebarDirectionRow key={c.session_id} id={c.session_id} name={directionLabel(directionNames, c.session_id, conversationTitle(c))} row={directionRow(c)} reg={reg} hover={hover} go={go} onNavigate={onNavigate} />)}
-            {recent.length > 0 && <SubHeading label={t("sidebar.recent_chats")} folded={recentFolded} onToggle={toggleRecent} />}
-            {recent.length > 0 && (
-            <Collapse open={!recentFolded} sidebarFold>
-              {recent.map(recentRow)}
-              {(recentLeft > 0 || recentLess) && (
-                <div className="relative z-10 flex flex-wrap">
-                  {recentLeft > 0 && (
-                    <button type="button" onClick={() => setRecentMore(recentMore + 1)} className={MORE_BUTTON}>
-                      {t("sidebar.show_more", { count: Math.min(recentCount, recentLeft) })}
-                    </button>
-                  )}
-                  {recentLess && (
-                    <button type="button" onClick={() => setRecentMore(0)} className={MORE_BUTTON}>
-                      {t("sidebar.show_less")}
-                    </button>
-                  )}
-                </div>
+            <div className="sidebar-indent">
+              {directions.length > 0 && (
+                <>
+                  <SubHeading label={t("sidebar.directions")} />
+                  <div className="sidebar-indent">
+                    {directions.map((c) => <SidebarDirectionRow key={c.session_id} id={c.session_id} name={directionLabel(directionNames, c.session_id, conversationTitle(c))} row={directionRow(c)} reg={reg} hover={hover} go={go} onNavigate={onNavigate} />)}
+                  </div>
+                </>
               )}
-            </Collapse>
-            )}
-            {assistant && <NavRow k="history" reg={reg} hover={hover} active={activeKey === "history"} to={{ name: "history" }} go={go} icon="list" label={t("sidebar.all_chats")} hint={assistant.conversations.length > 0 ? String(assistant.conversations.length) : undefined} />}
+              {recent.length > 0 && (
+                <>
+                  <SubHeading label={t("sidebar.recent_chats")} folded={recentFolded} onToggle={toggleRecent} help={t("sidebar.recent_chats_help")} />
+                  <Collapse open={!recentFolded} sidebarFold>
+                    <div className="sidebar-indent" inert={recentFolded || undefined}>
+                      {recent.map(recentRow)}
+                      {(recentLeft > 0 || recentLess) && (
+                        <div className="relative z-10 flex flex-wrap">
+                          {recentLeft > 0 && (
+                            <button type="button" onClick={() => setRecentMore(recentMore + 1)} className={MORE_BUTTON}>
+                              {t("sidebar.show_more", { count: Math.min(recentCount, recentLeft) })}
+                            </button>
+                          )}
+                          {recentLess && (
+                            <button type="button" onClick={() => setRecentMore(0)} className={MORE_BUTTON}>
+                              {t("sidebar.show_less")}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </Collapse>
+                </>
+              )}
+              {assistant && (
+                <NavRow k="history" reg={reg} hover={hover} active={activeKey === "history"} to={{ name: "history" }} go={go} icon="list"
+                  label={t("sidebar.all_chats")}
+                  hintCount={unarchived > 0 ? {
+                    n: unarchived,
+                    label: t("sidebar.unarchived_chat_count", { count: unarchived }),
+                  } : undefined} />
+              )}
+            </div>
           </Section>
         )}
 
@@ -463,6 +491,18 @@ export function AgentsList({ route, onNewAgent, workspaceActions }: { route: Rou
       </div>
       {adding.dialog}
     </div>
+  );
+}
+
+/** A group of the sidebar's pages (Pages, or a group #9071 brought: an extension's or the user's own), folding under
+ *  its own title (#2524), each fold kept apart; Pages ends with More. */
+function PageGroup({ group, more, first, reg, hover, activeKey, go }: { group: PageSection<NavPage>; more: NavPage[]; first: boolean; reg: RegFn; hover: (k: string | null) => void; activeKey: string; go: GoFn }) {
+  const [folded, toggle] = useFolded(group.id ? `pages:${group.id}` : "pages", false, { all: false, holds: more.some((p) => p.k === activeKey) });
+  return (
+    <Section title={group.title ?? t("sidebar.pages")} folded={folded} onToggle={toggle} right={folded ? <PagesTally pages={[...group.pages, ...more]} /> : undefined} first={first}>
+      {group.pages.map((p) => <NavRow key={p.k} {...p} reg={reg} hover={hover} active={activeKey === p.k} go={go} />)}
+      {more.length > 0 && <MorePages more={more} reg={reg} hover={hover} activeKey={activeKey} go={go} />}
+    </Section>
   );
 }
 
@@ -545,7 +585,7 @@ function MorePages({ more, reg, hover, activeKey, go }: { more: NavPage[]; reg: 
         <Icon name="chevron" size={10} stroke={2.4} className="shrink-0 text-ink-3 transition-transform" style={{ ...sidebarFoldMotion(!folded), transform: folded ? "rotate(-90deg)" : "none" }} />
       </button>
       <Collapse open={!folded} sidebarFold>
-        <div className="flex flex-col gap-px pl-3" inert={folded || undefined}>
+        <div className="flex flex-col gap-px sidebar-indent" inert={folded || undefined}>
           {more.map((p) => <NavRow key={p.k} {...p} reg={reg} hover={hover} active={activeKey === p.k} go={go} />)}
         </div>
       </Collapse>
@@ -571,7 +611,7 @@ function TodosUnread() {
 }
 
 function AgentsBlock(props: AgentsBlockProps) {
-  const bounded = useStore((s) => s.features.includes(SESSIONS_LIST_FEATURE));
+  const bounded = useStore((s) => supportsPagedAgents(s.features));
   const byTodo = useStore((s) => s.features.includes(SESSIONS_TODO_FEATURE));
   const todosSupported = useStore((s) => s.todosSupported);
   const todosUnread = useTodosUnread();
@@ -660,6 +700,9 @@ const PAGED_DIMENSION: Record<Exclude<AgentGrouping, "repo">, GroupDimension> = 
 function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, add = true, grouping, todosUnread = false, chooseGrouping }: AgentsBlockProps & { grouping: Exclude<AgentGrouping, "repo">; /** By to-do shown by status: its to-dos cannot be read */ todosUnread?: boolean; chooseGrouping: (g: AgentGrouping) => void }) {
   const machines = useStore(selectSidebarMachines);
   const catalog = useStore((s) => s.features.includes(SESSIONS_CATALOG_FEATURE));
+  const justFinished = useStore((s) => s.features.includes(SESSIONS_JUST_FINISHED_FEATURE));
+  // a hub that folds side sessions (#7944) leaves them out of the list: nothing to nest under a parent
+  const sideFold = useStore((s) => s.features.includes(SESSIONS_SIDE_FOLD_FEATURE));
   const archives = useStore((s) => s.features.includes(AGENT_ARCHIVES_FEATURE));
   const [rowMenu, setRowMenu] = useState<{ s: Session; anchor: HTMLElement; at?: MenuAt } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
@@ -740,9 +783,9 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
     {listMenu.anchor && <Menu anchor={listMenu.anchor} onClose={listMenu.close} align="right" items={listItems} />}
     <HubNoticeLine />
     <HerdrNotices />
-    <PagedSessionList root={runtimeSessions} path="/sessions" identity={runtimeIdentity} compare={runtimeOrder} removeIdentity={runtimeRemoval} parentOf={runtimeParentIdentity} event="sessions_list" grouping={pagedGrouping}
+    <PagedSessionList root={runtimeAgents} path={RUNTIME_AGENTS_PATH} identity={runtimeIdentity} compare={runtimeOrder} removeIdentity={runtimeRemoval} parentOf={sideFold ? undefined : runtimeParentIdentity} event="sessions_list" grouping={pagedGrouping}
       activeAt={runtimeActiveAt} needsYou={runtimeNeedsYou} isOpen={(s) => activeKey === `s:${s.machine_id}/${s.session_id}`}
-      catalog={catalog} placeOf={runtimePlace} failureText={agentsReadFailed}
+      catalog={catalog} justFinished={justFinished} placeOf={runtimePlace} failureText={agentsReadFailed}
       label={(dimension, id) => dimension === "machine" ? machineWithHub(id, machines) : id}
       renderRow={(s, within) => {
         const k = `s:${s.machine_id}/${s.session_id}`;
@@ -755,6 +798,16 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
     {deleting && <DeleteSessionDialog open session={deleting} machineName={machineWithHub(deleting.machine_id, machines)} onClose={() => setDeleting(null)} />}
     <LinkTodoDialog open={Boolean(linkTarget)} session={linkTarget} onClose={closeLinkTarget} />
   </div>;
+}
+
+function isSidebarAgent(session: Session): boolean {
+  if (session.assistant || session.space === "health") return false;
+  // Older hubs may report the health directory without a space marker. Match the state directory and manager name
+  // used by identity.InHealthSpace, including paths from Windows nodes.
+  const cwd = session.cwd ?? "";
+  const path = normalizePath(/^(?:[a-z]:|\\\\)/i.test(cwd) ? cwd.replaceAll("\\", "/") : cwd);
+  const parts = path.split("/");
+  return !parts.some((part, index) => isPersonaStateDir(part) && /^health(?:-m-[0-9a-f]+)?$/.test(parts[index + 1] ?? ""));
 }
 
 function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, workspaceActions, add = true, foldable = false, grouping, hubUnreachable, chooseGrouping }: AgentsBlockProps & { grouping: AgentGrouping; /** useHubUnreachable */ hubUnreachable: boolean; chooseGrouping: (g: AgentGrouping) => void }) {
@@ -770,7 +823,8 @@ function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, 
     return sidebarMachines.filter((m) => own.has(m.id));
   }, [ownIds, sidebarMachines]);
   const { sessions: every, loaded, error: listError } = useFullAgentSessions();
-  const all = useScoped(every);
+  const agents = useMemo(() => every.filter(isSidebarAgent), [every]);
+  const all = useScoped(agents);
   const mutes = useStore((s) => s.mutes);
   const pins = useStore((s) => s.pins);
   const interactions = useStore((s) => s.interactions);
@@ -803,6 +857,7 @@ function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, 
   // drawn as it is, with no word about them
   const todosFailed = !chatList && todosUnread && grouping === "todo" && todosSupported !== false;
   const shownGrouping = todosSupported === false && grouping === "todo" ? "machine" : todosFailed ? "state" : grouping;
+  const catalog = useWorkspaceCatalog(shownGrouping === "repo");
   const availableGroupings = useGroupings();
   // "State first" / "Recently updated" (iOS AgentSort, G099): not under "By status", whose sections are the states already
   const [sortChoice, chooseSort] = useAgentSort();
@@ -821,13 +876,17 @@ function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, 
   }, []);
   const listed = useMemo(() => withoutBotmux(all, botmuxHidden), [all, botmuxHidden]);
   const facets = useMemo(() => buildAgentFacets(listed, machines, pins), [listed, machines, pins]);
-  const evalCtx = useMemo(() => ({ machines, pins, interactions, now: Date.now() }), [machines, pins, interactions]);
+  const dimActive = hasActiveDimensionFilters(dimFilters);
+  const clock = useNow(60_000, dimActive);
+  const evalCtx = useMemo(() => ({ machines, pins, interactions, now: Date.now() }), [listed, dimFilters, machines, pins, interactions, clock]);
   const { sessions: dimFiltered, plan: searchPlan } = useMemo(
     () => applyDimensionFilters(listed, dimFilters, evalCtx, facets),
     [listed, dimFilters, evalCtx, facets],
   );
-  const dimActive = hasActiveDimensionFilters(dimFilters);
-  const { live, recent: offline } = useMemo(() => splitAgentSessions(dimFiltered, machines), [dimFiltered, machines]);
+  // A host pin keeps its saved conversations in the repository tree, including ones older than Recent's 40 rows.
+  const { live, recent: offline } = useMemo(() => splitAgentSessions(dimFiltered, machines,
+    shownGrouping === "repo" && !chatList ? (s) => hasWorkspacePin(s, catalog.workspaces, catalog.manager) : undefined),
+  [dimFiltered, machines, shownGrouping, chatList, catalog]);
   const seeded = useRef(false);
   useEffect(() => {
     // a filter saved in this browser starts from what it matches once the list has loaded
@@ -880,7 +939,6 @@ function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, 
     return shareTree(lastTodoTree.current, byUpdate ? todoTreeByUpdate(built) : built);
   }, [unpinned, machines, shownGrouping, mutes, todos, todosLoaded, byUpdate, keepEmptyGroups]);
   lastTodoTree.current = todoTree;
-  const catalog = useWorkspaceCatalog(shownGrouping === "repo");
   const repoMachines = useMemo(() => {
     if (shownGrouping !== "repo") return [];
     const built = buildRepoMachineTree(unpinned, machines, { ...catalog, hiddenSources: botmuxHidden ? ["botmux"] : undefined, navigationSessions: [...shown, ...pinnedAgents.filter((p) => !shown.includes(p))], hideEmpty: filtered, compareSessions: byUpdate ? byUpdated : undefined });
@@ -1061,7 +1119,7 @@ function LegacyAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate, 
       {idle.length > 0 && (
         <Section title={t("sidebar.idle_spaces", { count: idle.length })} folded={idleFolded} onToggle={toggleIdle}>
           <WindowedRows items={idle.flatMap((sp) => sp.sessions.map((s) => ({ sp, s })))} holds={({ s }) => rowKey(s) === activeKey} render={({ sp, s }) => (
-            <SessionRow key={s.session_id} s={s} k={`s:${s.machine_id}/${s.session_id}`} reg={reg} hover={hover} active={activeKey === `s:${s.machine_id}/${s.session_id}`} to={{ name: "session", mid: s.machine_id, sid: s.session_id }} go={go} hint={sp.sessions.length > 1 ? `${sp.name} › ${tabLabel(s)}` : sp.name} onMenu={onRowMenu} />
+            <SessionRow key={s.session_id} s={s} k={`s:${s.machine_id}/${s.session_id}`} reg={reg} hover={hover} active={activeKey === `s:${s.machine_id}/${s.session_id}`} to={{ name: "session", mid: s.machine_id, sid: s.session_id }} go={go} hint={(s.slot_id?.trim() || s.tab_id?.trim()) ? sp.name : sp.sessions.length > 1 ? `${sp.name} › ${tabLabel(s)}` : sp.name} onMenu={onRowMenu} />
           )} />
         </Section>
       )}

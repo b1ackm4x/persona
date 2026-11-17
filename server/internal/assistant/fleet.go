@@ -41,6 +41,8 @@ type fleetBook struct {
 	// reportSent: assistant conversation -> when a scheduled run or a task notice was sent into it (noteReportTurn):
 	// the turn it starts is pushed however short it is.
 	reportSent map[string]time.Time
+	// cardTell serializes telling the hub a card with checking it is still held (fleet_ix.go tellCard).
+	cardTell sync.Mutex
 	// codexAnnounced: Codex card id -> when it was announced (fleet_ix_codex.go)
 	codexAnnounced map[string]time.Time
 	// codexEnded: Codex card id -> when the node stopped listing it (fleet_ix_codex.go)
@@ -60,6 +62,7 @@ type fleetBook struct {
 	// shorten them on their own Service before any session list comes, so an upgrade loop another test left running
 	// never reads what this one writes (#4554).
 	upgradeEvery, upgradeFor time.Duration
+	upgrades                 sync.WaitGroup // active screen-upgrade loops; database-backed fixtures wait during teardown
 	// hooked: Persona's hooks run in the session (a hook event came since the manager started).
 	hooked map[[2]string]bool
 	// stopSig: the signature of the reply each session's latest Stop ended its turn with; pushedSig: the one a
@@ -75,10 +78,15 @@ type fleetBook struct {
 	sentMu sync.Mutex
 	sent   map[string]sentList
 	enc    bytes.Buffer
+	// archived is what was told of each machine's archived rows (fleet.archived, tellArchived), under sentMu.
+	archived map[string]archivedSent
 	// shown: the rows awaiting a reply of the list last told the hub for each machine, decorated (the reminders of
 	// agents awaiting a reply read them instead of decorating every list each minute, agents_reply.go).
 	shownMu sync.Mutex
 	shown   map[string][]proto.Session
+	// finishedDue: when the first Just finished row of each machine's list, as last decorated to be told, runs out
+	// of its window (#9751), under shownMu. Nothing else tells a list again when only time passes (republishFinished).
+	finishedDue map[string]time.Time
 	// asks: what each session's last words ask, while they stay the same (fleet_asks.go).
 	asks asksMemo
 	// folds: what each machine's last complete list folded its children under (fleet_fold.go), for the rows and

@@ -2,6 +2,7 @@ import AppIntents
 import Foundation
 import Testing
 @testable import Persona
+import PersonaWire
 
 /// One-tap meeting recordings (docs/apple/recording.md「Meeting recordings」): which calendar event names one, what its
 /// Live Activity shows, its intents' rules, and what a meeting adds to a recording.
@@ -579,6 +580,18 @@ import Testing
         #expect(RecordingLink.matches(RecordingLink.page))
         #expect(!RecordingLink.matches(URL(string: "persona://open")!))
         #expect(!RecordingLink.matches(URL(string: "https://example.com/record")!))
+    }
+
+    /// A meeting's End on the Lock Screen (#8731 V4) is a link that names the recording, lowercase, and opens Recordings
+    /// as the page link does; no other link names one.
+    @Test func endLinkNamesTheMeeting() {
+        let id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        let end = RecordingLink.end(id)
+        #expect(RecordingLink.matches(end))
+        #expect(RecordingLink.endID(end) == id.lowercased())
+        #expect(RecordingLink.endID(RecordingLink.page) == nil)
+        #expect(RecordingLink.endID(URL(string: "persona://open?end=\(id)")!) == nil)
+        #expect(RecordingLink.endID(URL(string: "persona://record?end=")!) == nil)
     }
 
     // MARK: Intents

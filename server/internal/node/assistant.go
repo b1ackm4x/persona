@@ -38,10 +38,11 @@ import (
 // A long conversation is compacted (docs/assistant/assistant.md "Compaction"): every restart after the prompt cache expired (an hour)
 // writes the whole context again, half a million tokens for an assistant conversation that had never been compacted.
 // Claude Code compacts on its own once the context nears the auto-compact window, also under -p (tested on 2.1.314), by
-// default the model's own window. Persona sets no window of its own (#3066): the main conversation and every other
-// follow what the launcher declares (CLAUDE_CODE_AUTO_COMPACT_WINDOW, CLAUDE_CODE_MAX_CONTEXT_TOKENS, a managed
-// launcher's CompactWindow / MaxContext / model window), else the model (assistant_compaction_policy.go). Codex alike
-// with model_auto_compact_token_limit. Claude Code's own idle compaction only runs in interactive sessions, so a process
+// default the model's own window. Every conversation follows what the launcher declares (#3066:
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW, CLAUDE_CODE_MAX_CONTEXT_TOKENS, a managed launcher's CompactWindow / MaxContext /
+// model window), else the model; only the main conversation on a managed launcher is held to the manager's
+// assistant.main_compact_window when that is smaller (#7314, assistant_compaction_policy.go). Codex alike with
+// model_auto_compact_token_limit. Claude Code's own idle compaction only runs in interactive sessions, so a process
 // about to be let go with more than 75% of its window in context (the declared one, else the one Claude Code reports;
 // assistantIdleCompact until either is known) is sent /compact first, while its cache is still warm: the next start
 // reads a summary instead, and nobody waits for it.
@@ -294,13 +295,18 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 			return "", serviceTierRefusal(ctx, "assistant_service_tier_start_only")
 		}
 	}
-	if err := validModesFor(launcherOr(launcher, st.Launcher), mode, effort); err != nil {
+	if err := n.validAssistantModes(ctx, launcherOr(launcher, st.Launcher), mode, effort); err != nil {
 		return "", err
 	}
-	isMain := executionOption(options).IsMain
+	isMain, mainWindow := executionOption(options).IsMain, executionOption(options).MainCompactWindow
+	policy := executionOption(options).SupervisionInstructions
+	policyResolved := executionOption(options).SupervisionResolved || policy != ""
+	if !policyResolved {
+		policy = st.SupervisionInstructions
+	}
 	interject := executionOption(options).Interject // this message, not the conversation (assistant_interject.go)
 	if len(options) == 0 {
-		isMain = st.IsMain
+		isMain, mainWindow = st.IsMain, st.MainCompactWindow
 	}
 	// A guest conversation (assistant_guest.go): a new one asked for, or one that is.
 	guest, guestKind := st.Guest, st.GuestKind
@@ -350,6 +356,9 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	if onRuntime, runs := n.assistantRuntime(rl), n.runtimeAssistant(id); guest != nil && (onRuntime != nil || runs) {
 		return "", errGuestAgent
 	} else if onRuntime != nil || runs {
+		if policy != "" {
+			return "", supervisionRuntimeRefusal(ctx)
+		}
 		if startTier != "" {
 			return "", serviceTierRefusal(ctx, "assistant_service_tier_unsupported")
 		}
@@ -357,7 +366,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 			return "", skillSelectionError(assistantskills.ErrReference)
 		}
 		if execution.ConfigDir != "" {
-			return "", errors.New("config_dir is only supported for Claude assistant conversations")
+			return "", errors.New(assistantwire.ConfigDirClaudeOnly)
 		}
 		if id != "" && (onRuntime == nil || !runs) && !(runs && launcher == "") { // another kind of agent than its own
 			return "", errors.New("换到另一种 Agent 需要新建对话")
@@ -370,7 +379,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	}
 	if len(options) == 0 || (execution.Fingerprint == "" && execution.Model == "") {
 		if launcher == "" || launcher == st.Launcher {
-			execution = modelExecution{Model: st.Model, Effort: st.ModelEffort, UseEffort: st.ModelFingerprint != "", Fingerprint: st.ModelFingerprint, Runtime: st.Runtime}
+			execution = modelExecution{Model: st.Model, Effort: st.ModelEffort, UseEffort: st.ModelFingerprint != "", Fingerprint: st.ModelFingerprint, Runtime: st.Runtime, SupervisionInstructions: st.SupervisionInstructions}
 		}
 	}
 	if launcher != "" && st.Launcher != "" && launcher != st.Launcher && execution.Fingerprint == "" {
@@ -380,7 +389,10 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	if effort != "" {
 		execution.Effort = effort
 	}
-	if err := execution.check(rl); err != nil {
+	if err := execution.checkModel(); err != nil {
+		return "", err
+	}
+	if err := n.validAssistantModes(ctx, rl, "", execution.Effort); err != nil {
 		return "", err
 	}
 	if launcher == "" && id != "" {
@@ -393,7 +405,11 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		return "", err
 	}
 	if recovery == nil && id != "" {
-		execution = n.heldFallback(id, launcher, execution) // the fallback that answered, for a while (#3788)
+		askedModel := execution.Model
+		// The fallback that answered (#3788). holdExpired is declared apart: ":=" would shadow execution in this block.
+		var holdExpired bool
+		execution, holdExpired = n.heldFallbackWithExpiry(id, launcher, execution)
+		execution = n.applyModelRecoveryReturn(ctx, id, askedModel, execution, holdExpired)
 	}
 	if execution.Model != "" {
 		if _, err := n.launcherModelCheck(ctx, launcher, execution.Model); err != nil {
@@ -401,6 +417,16 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		}
 	}
 	execution.IsMain = isMain && guest == nil
+	// Only a managed launcher's start applies the main conversation's window (capMain): on another one it would only
+	// change the fingerprint and restart the main conversation for nothing.
+	execution.MainCompactWindow = n.mainWindowOn(launcher, execution.IsMain, mainWindow)
+	execution.SupervisionInstructions = st.SupervisionInstructions
+	if policyResolved {
+		execution.SupervisionInstructions = policy
+	}
+	if guest != nil {
+		execution.SupervisionInstructions = ""
+	}
 	agent, err := n.assistantAgent(ctx, launcher)
 	if err != nil {
 		return "", err
@@ -418,7 +444,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 			return "", err
 		}
 	} else if executionOption(options).ConfigDir != "" {
-		return "", errors.New("config_dir is only supported for Claude assistant conversations")
+		return "", errors.New(assistantwire.ConfigDirClaudeOnly)
 	}
 	timing.mark("preflight_done", true)
 	var p *assistantProc
@@ -483,8 +509,14 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	if p != nil && (!p.alive() || p.launcher != launcher || p.fingerprint != n.executionFingerprint(launcher, execution) || p.needsRestartFor(want) || p.instructionsStale()) {
 		p.mu.Lock()
 		active := p.busy || len(p.tasks) > 0
+		roleChanged := p.model.SupervisionInstructions != execution.SupervisionInstructions
 		p.mu.Unlock()
 		if active && p.alive() && !restartForRecovery { // a recovery's busy is its own hold on the failed turn
+			if roleChanged {
+				// Do not kill active work, or deliver a new role's message on the old system
+				// policy. Manager-generated messages remain queued for an idle retry.
+				return "", refusal("busy", i18n.T(i18n.From(ctx), "rpc-errors.assistant_supervision_busy"), nil)
+			}
 			// Answering, or running background tasks a new process would kill: the message goes to this process on
 			// what it runs, and the switch waits for the first message after it is idle. Refusing it left the user
 			// unable to send while the conversation kept starting tasks (#1554).
@@ -520,14 +552,16 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		}
 		n.noteModes(id, mode, effort)
 	}
-	if st, known := n.state.get(id); !known || st.Launcher != launcher || st.Cwd != cwd || st.Model != execution.Model || st.ModelFingerprint != execution.Fingerprint || st.ModelEffort != execution.Effort || st.Runtime != execution.Runtime || st.IsMain != execution.IsMain || st.ConfigDir != execution.ConfigDir {
+	if st, known := n.state.get(id); !known || st.Launcher != launcher || st.Cwd != cwd || st.Model != execution.Model || st.ModelFingerprint != execution.Fingerprint || st.ModelEffort != execution.Effort || st.Runtime != execution.Runtime || st.IsMain != execution.IsMain || st.MainCompactWindow != execution.MainCompactWindow || st.ConfigDir != execution.ConfigDir || st.FollowsSetting != execution.FollowsSetting || st.SupervisionInstructions != execution.SupervisionInstructions {
 		started := st.StartedAt
 		if started.IsZero() {
 			started = time.Now().UTC()
 		}
 		st.Launcher, st.Cwd, st.StartedAt = launcher, cwd, started
 		st.Model, st.ModelFingerprint, st.ModelEffort, st.Runtime = execution.Model, execution.Fingerprint, execution.Effort, execution.Runtime
-		st.IsMain = execution.IsMain
+		st.IsMain, st.MainCompactWindow = execution.IsMain, execution.MainCompactWindow
+		st.SupervisionInstructions = execution.SupervisionInstructions
+		st.FollowsSetting = execution.FollowsSetting
 		st.ConfigDir = execution.ConfigDir
 		n.state.put(id, st)
 	}
@@ -862,6 +896,13 @@ func (n *Node) readAssistant(p *assistantProc, r io.Reader) {
 			recovering := n.recoverAssistantResult(p, ev.IsError, ev.Result, kinds...)
 			if !recovering {
 				n.clearAssistantRecovery(p, !ev.IsError)
+				// A turn that ended well is newer evidence than an exhausted chain: the failure card's cause and reset
+				// time must not survive onto a later error, so drop the marker on any successful result (#7824).
+				if !ev.IsError {
+					if r := n.modelRecovery(p.id); r != nil && r.ChainExhausted {
+						n.clearModelRecovery(p.id)
+					}
+				}
 			}
 			p.mu.Lock()
 			manual := p.manual

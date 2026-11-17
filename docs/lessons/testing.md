@@ -7,6 +7,11 @@
   Keep normal detached delivery and production wait limits unchanged, and measure serial and partitioned commands
   separately when evaluating the gain.
 
+- A fake peer recording a user line is not the send's completion (#9673). The desktop launcher's first message
+  continues in the background and still reads the shared confirmation timeout. After observing inbox receipt, wait
+  for that session's existing input lock before restoring the test's package globals; keep the drain on assertion
+  failure paths too. A fixed pause gives the race another schedule, not a happens-before relationship.
+
 - A transport fixture that already reads every reply should wake its request waiter from that reader (#5730).
   Register by request ID before sending, retain JSON-RPC errors, remove waiters on cancellation/EOF/write failure,
   and keep duplicate or late replies from blocking the reader. Polling an already available approval response
@@ -61,12 +66,11 @@
   (#1112). Fixed startup sleeps can turn a tap on an unloaded card into a silent no-op; accepting a reply with no held
   request then falsely labels the later card snapshot as a resurrection. Require an actual request before delivering
   its reply and test a delayed initial snapshot. Streaming projection must pass the active turn and whether live text
-  is drawn, as the real page does. A pending wake joins the ordinary execution summary while the previous answer stays
-  in place; only when that turn's next words start streaming does the earlier narration fold into the inspectable work.
-  An idle or other-turn presentation still shows the last answer. Cover the ordered/no-tail shape, manual inspection,
+  is drawn, as the real page does. A wake opens an exchange of its own (#9140): the answer before it stays in place
+  while the woken work runs, streams and ends, and the woken work has its own summary.
+  An idle or other-turn presentation still shows the last answer. Cover the ordered shape, manual inspection,
   serialized reload and other turn IDs separately. When a merge retains the maintained renderer, reconcile tests
-  imported from a competing wake model instead of letting their old tail expectations reintroduce it, and do not treat
-  `hasPendingWake` as proof that new words are streaming (#3169).
+  imported from a competing wake model instead of letting their old expectations reintroduce it (#3169).
 
 - UI screenshot evidence must be unobscured, not merely present in the accessibility tree (#2705). A localized
   notification prompt left the chat's elements discoverable while covering the screenshot. Handle the current
@@ -86,6 +90,8 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
 - To keep a fake hub answer out (a press past `cardAnswerWait`), block it on a channel the test closes, not a fixed sleep (2026-11-11, #4274). The assistant's `fakeHub` runs app answers under its lock, so a held answer blocks every other fake call: close the channel before the test touches the hub again, and register the close with `t.Cleanup` so a failed assertion cannot leave it blocked (`heldAnswer` in `server/internal/assistant/feishu_answer_ended_test.go`). Then wait for the last effect of the late path (its note), not for a fixed time.
 
 - `synctest.Wait` is not a general goroutine barrier (#1836): mutex contention and real socket I/O, including an `httptest` server's accept loop, do not count as durably blocked. A test waiting for quiescence can hang even though its target operation is waiting as intended. For these integration tests, use explicit entered/release/completed channels and bounded waits; reserve `synctest` for fixtures whose blocking operations it can track.
+
+- A count that must not grow after a call waits for the pushes the call set off, not for a fixed while (2026-11-14, #7419). The manager hands each push to the hub on a goroutine (`deliver`), and a card's push first waits up to `linkRangWait` for Persona Link on another (`notifyInteraction`), so a count read when the call returns misses them, and a 50 ms sleep is both a guess at the scheduler and shorter than that wait, and waiting for the count to reach the expected number stops at the first push and passes over a later one (a mutant that pushed the card again on detach passed 33 times in 40 that way). The ask rig hangs in a `synctest` bubble (its fake model is an `httptest` server, as in #1836 above), so `pushesUnderWay` in `server/internal/assistant/ask_release_test.go`, taken just before the call, reads the goroutine list for the goroutines those two functions started and the ones the calling goroutine started since: without the latter, a mutant that pushed from a goroutine of its own passed 28 times in 100. A "created by" line names the function with the go statement, which the compiler never inlines, and the two are named through method expressions, so a rename fails to compile instead of counting nothing. A push armed on a timer is not a goroutine yet and is not seen.
 
 - Test authoring realm comparisons as a matrix, not just default-export shape (#1200). `structuredClone`, Response JSON, iterators, streams and WebCrypto can return host objects during initialization; compare Object/Array, containers, regexps, dates and binary families in both native ESM and the probe. Preserve cycles, transfers, real subclass negatives and native null-prototype records. State the supported `instanceof` contract separately from exact cross-realm prototype identity. EventTarget listener methods must be synchronous and return undefined: observe nonconforming ordinary promise/thenable rejections before returning OPTIONS, and keep secondary cleanup errors alongside the primary failure. If caller constructor/species machinery prevents handler installation, report the observation error and attempt owned-worker cleanup, but do not claim that the original rejection was handled or alter caller promises/global rejection policy. Ready must precede `module.evaluate()`, which can block synchronously forever; recorded SIGINT/SIGTERM exit priority survives a late or failed cleanup without inventing reaping evidence.
 
@@ -120,7 +126,7 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
 
 - A web test that times out only in the full suite is usually loading or reading something inside its body (2026-11-06, #4955). Vitest reports the timeout as `STACK_TRACE_ERROR` at about 5000 ms (or the test's own budget). On unchanged master with `--maxWorkers=96`, 10 of 10 runs were red. `catalog.test` re-read every language's catalog files and loaded the admin catalogs in each test, `busy-motion.test` walked the whole source tree in each test, and `highlight-lazy.test` did its first `import("rehype-highlight")` inside the test, while the checks themselves take milliseconds. Load or read once at the top of the file instead (collection is not covered by the test timeout), and don't raise the timeout; #5326 (inlined catalogs under Vitest) and #5729 (Persona's warm-up) fixed other cases of the same kind. Two of the failures were not load. `initI18n` applied whichever overlapping call finished last, so a test that timed out mid-switch changed the next test's language (`a、b、c`); now only the latest call applies. `formatList` follows the system region, which under Node is the machine's locale, so on an en-SG machine `a, b and c` failed every run; tests that format set `navigator.languages` themselves.
 
-- A web test that waits a fixed number of `act` turns can still lose to a lazy chunk (2026-11-10, #2874). `RelayAccounts.test` pushed an account's page whose first item is a header, drawn by the `CodeViews` chunk under `lazyPage`; its first draw waits for a dynamic import, and under Vitest even importing a module that is already loaded takes event-loop turns, not just microtasks (2 to 8 `setImmediate` turns in three quiet runs). In one of three loaded full-suite runs that outlasted `settle`'s eight `act` turns and the header was missing; delaying the chunk by 300 ms failed the test every time. Load the chunks first with `beforeAll(() => loadPages(), 60_000)` (as `CodeViews.test` and `ime-enter.test` do), or wait for what the test looks for, rather than adding turns.
+- A web test that waits a fixed number of `act` turns can still lose to a lazy chunk (2026-11-10, #2874). `RelayAccounts.test` pushed an account's page whose first item is a header, drawn by the `CodeViews` chunk under `lazyPage`; its first draw waits for a dynamic import, and under Vitest even importing a module that is already loaded takes event-loop turns, not just microtasks (2 to 8 `setImmediate` turns in three quiet runs). In one of three loaded full-suite runs that outlasted `settle`'s eight `act` turns and the header was missing; delaying the chunk by 300 ms failed the test every time. Load the chunks first with `beforeAll(() => loadPages(), 60_000)` (as `CodeViews.test` and `ime-enter.test` do), or wait for what the test looks for, rather than adding turns. When a mocked lazy module is the boundary, delaying its real factory makes the gap deterministic; await that import inside `act` and then assert the mounted element with a bounded wait, so module resolution does not escape `act` (#7156).
 
 - A concurrency test that passes with `-race` can still fail without it (2026-11-06, #5908). `-race` slows the instrumented code, so the goroutines meet in a different order. `TestInstallClaimsOperation` passed 20 of 20 runs with `-race` and failed 13 to 29 of 40 without it. Without `-race` its second install usually ran only after the first had committed and used up the preview, and got a 403 from the market check that the PR's own `-race` runs never reached. Run a new concurrency test with `-count`, both with and without `-race`. For the interleaving that matters, set up the state directly instead of hoping two goroutines meet there (here: claim the operation, drop the preview, then install again).
 
@@ -134,6 +140,7 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
 
 - Waiting for one effect does not wait for another made on a different goroutine (2026-11-09, #2152). A source page's tree changes first and its frame is sent later by the delivery goroutine (`ui_page_delivery.go`), so `TestPageNativeFiniteLoadStillStartsWithLoading`, which waited for the tree to say `loaded` and then counted delivered frames, failed only on busy CI. Wait for each effect you assert on (`pageAwait` for the frames too). To reproduce such a gap, slow the receiving side in a scratch copy (a fake `Notify` that sleeps 20 ms failed 10 of 10 runs), or run `go test -cpu 1 -count=60` with every core busy (4 of 60 failed); an idle machine passed 40 of 40.
 - A cancel on a fixed deadline counted from the start races the fake's own startup (2026-11-10, #2674). `TestToolCheckTimeoutStopsItsHelpers` gave the call 300 ms, but its fake had to start a shell and write its helper's pid first; on a busy machine the cancel came before there was a helper, and the test failed (1 of 30 runs with every core busy) without checking what it was about. Cancel once the fake shows it started (the pid file), and time the return from the cancel. Do not lengthen the deadline instead: it only makes the race rarer.
+- A listener's `Accept` returning does not mean the client's `DialContext` has (2026-11-14, #7574). `TestDialSocketCancel` cancelled as soon as its fake node accepted, to check that `nodeclient.Dial` keeps waiting for the answer; but Go checks the ctx once the connect completes, so a cancel in that gap failed the dial itself with `operation was canceled` (30 of 100 runs on Linux with 4 CPUs). To cancel "after connecting", wait for something the client sends only after connecting: the fake reads the request line first.
 - A child's `/proc/<pid>/environ` can read empty right after `exec.Cmd.Start` returns (2026-11-14, #7028). `Start` returns once the new program's close-on-exec has run, but the kernel lays out that program's environment later, in the ELF loader; reading it at once came back empty 1835 times in 2000 on the hub machine. `TestCodexTakeoverUsesOnlyTheSelectedWritersTerminalBridge` started `sleep 60` as its stand-in Codex writer and the takeover read the writer's environment a few calls later, so it refused with `codex_takeover_unavailable` about 3% of the time per subtest. A fixture whose code under test reads a child's `/proc` environment (or anything else set up after exec) waits until the child runs its own code: `/bin/sh -c 'echo ready; read -r line'` with stdin held open, then read that line. Keep the blocking step a builtin, since dash execs a last simple command such as `sleep` in place, which opens the same window again. A real process found by a scan has long been running.
 - A recovering assistant conversation's `busy` alone does not mark the end of its turn (2026-11-10, #3815). When recovery moves to the next model, `assistantSend` registers the replacement process (`spawnAssistant`) before it marks it busy and sends the retry, with the context snapshot and the mode sync in between. `sdkFixture.idle` waited for the registered process's `!busy`, so `TestAssistantRecoveryStopsAfterBothModelsAndTheirRetries` counted 2 of its 4 requests (9 of 400 runs on a busy Mac). The node publishes that gap as working (`busy || recovering` in `assistantSessions`); a wait for the end of a turn must use the same rule. To find such a gap, log the internal state at the moment the wait returns in a scratch test: slowing the fake CLI's `initialize`, the first guess, did not widen it.
 
@@ -198,6 +205,10 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
 - Runtime CLI element filtering uses `id`, not `identifier` (2026-11-06, #2024). The latter is an XCUITest property; passing it to the runtime omits ID filtering and is not card-readiness evidence. Validate real card IDs plus visibility/on-screen bounds; still use XCUITest for nested WebView body buttons. Never fall back to fixed-sleep screenshots when a button cannot be found.
 
 - Do not nest `#require` in Swift Testing macros (2026-11-05, #2024). `#require(JSONSerialization.jsonObject(with: try #require(body)) …)` fails real compilation with recursive expansion. Unwrap body in a separate `#require`, then parse/assert. `#expect(array.allSatisfy(keyPath))` can also be mistaken for a throwing closure during macro expansion; use an explicit nonthrowing closure. Preserve assertions rather than skip tests.
+
+- Never `return Issue.record(...)` in a void `@Test` (2026-11-14, #7677). `Issue.record` is `@discardableResult` and returns an `Issue`, so returning it from a void test fails compilation with "unexpected non-void return value in void function"; the error only surfaces when the test target compiles, so an app-target-only build stays green. Write two statements — `Issue.record("..."); return` — inside a guard's `else`, matching the repo's existing plain-statement usage.
+
+- The iOS simulator does not implement data protection (2026-11-14, #7677). `FileManager.attributesOfItem` always returns nil for `.protectionKey` there, so a test asserting `FileProtectionType` on a written file fails on every simulator run and can only pass on a physical device. Gate the protection-level assertions with `#if !targetEnvironment(simulator)` and keep the write/read round-trip assertion unconditional; do not "fix" the production `completeFileProtection…` write option to make the simulator assertion pass.
 - Another session can claim a build slot between inspection and launch (2026-11-05, #2024). `pgrep` observes, not locks. All `xcodebuild` must use `~/.local/bin/xcode-slot xcodebuild …` for the machine-wide slot, max two concurrent, queue when full. Never bypass the lock or increase `XCODE_SLOTS`. Outer waits have an overall timeout; distinguish not started, build failure, and success. A queue-exit code is neither test failure nor pass; serialize your own builds.
 
 - After resolving rebase conflicts, `git diff --check` covers only uncommitted edits; a clean worktree does not prove commits lack conflict markers (#2195). Before push/merge also run `git diff origin/main...HEAD --check` over the full PR diff.
@@ -434,9 +445,29 @@ listed" did, and its title check (the row takes the old session's title, read of
 transcript was long enough to be listed (`longTurn`). Before asserting a row is absent, assert it is there in the same
 setup.
 
+## A simulator that ran against the mock hub uploads its recordings to the next hub it pairs with (2026-11-17, #9417)
+
+Recordings a UI test makes against the mock hub stay in the simulator's library, and the app syncs whatever the hub it
+is paired with doesn't have. Pairing the same simulator with a real hub afterwards (an end-to-end check) uploaded two
+test meetings there, which then sat in the owner's meeting list. Before pairing a simulator with a real hub, erase it,
+use another one, or move the earlier recordings out of the app's `Library/Application Support/Recordings/` while the
+app isn't running.
+
 ## The mock hub does not enforce device roles (2026-11-12, #4869)
 
 `scripts/mock/mock_hub.py` answers every request whatever the credential, so a watch feature checked only in a simulator against it can be refused on a real hub. The watch's Milk Frog shipped that way: its art requests got 403 from `allowed()` (the watch's `answer` token reads only `answerReads`), and the frog never appeared on a real watch. A new request from the watch (or any `answer`, `link` or extension credential) needs its path in the hub's allowlist, a case in `TestAnswerRoleOnlyWhatTheWatchDoes`, and one end-to-end call with a real token through `h.routes()` (`TestDeviceTokens`).
+
+## One machine can't show what a phone's network change does (2026-11-16, #8709)
+
+The live screen's route acceptance (#6398) ran the simulator on the same Mac as the node, so the hub relay and the direct route never shared a network the test could take away. On a real iPhone they do: both leave over Wi-Fi. Turning Wi-Fi off took the relays down with the direct route, their sockets said nothing, and the session sat on dead relays until the user opened the screen again.
+
+- Before calling a fallback done, ask what else leaves on the interface that fails. A path you fall back to can fail in the same event.
+- A transport that is a fallback needs its own silence rule. "The socket will throw" is not enough on a vanished interface.
+- With no screenshots, the timeline comes from the node's `screenlink:` lines in the hub journal, the hub's per-minute `traffic` lines (start, `elapsed_ms`) and the Mac's `log show` for `screensharingd` (each new sign-in is a new session, not a rejoin).
+
+## A client's wire fixture comes from the hub's real answer (2026-11-15, #8310)
+
+The iPhone's Add to To-Dos decoded `todos[].item` as `{"id": …}` while the hub sent the bare row id, so every tap made the to-do, filed the row and then showed "The data couldn't be read because it isn't in the correct format" (`DecodingError.typeMismatch`). The app's unit test and `scripts/mock/mock_hub.py` were both written from the client's guess, so everything passed until a real hub answered. When a client starts reading a new answer, take its fixture from the hub's own handler output (a Go test's response body) or the protocol table, and pin the shape on the hub side with a test that decodes it the way the shipped client does (`TestInboxTodoReplyItemIsAnObject`). A decoding error on a 200 means the shapes disagree: fix the hub first so installed apps work again, then make the client accept both.
 
 ## Live-only Go tests need their own compile pass (2026-11-11, #4654)
 
@@ -614,6 +645,17 @@ Ordinary `go test` and CI do not include `//go:build herdrlive`, so a node helpe
 - Tests selecting rows by "where one swipe stops" change results after row-height/font changes (#245 changed new-shell text sizes) (2026-11-02, #339).
   `testScrolledListHoldsStillThroughUpdates` previously happened to stop on a space whose rank did not change, missing replacement of the reader's screen. Bisect landed on a font-only commit, but the real issue was failure to preserve the reader's row.
   A bisected commit shows where the issue became visible, not necessarily its cause; check whether its edits explain the symptom. Find rows by title, not whole accessibility labels containing "3 minutes ago", which change across minutes.
+- **A row on the first screen today can be below it tomorrow** (2026-11-13, #6782). A SwiftUI `List` makes a row only as it comes near the
+  screen, so `waitForExistence` on a row below the first screen never succeeds. `TodoPlanTests` waited for the NAS to-do, and a new section above
+  it in the mock pushed it down: the test failed at its first check. Wait for the list's first row, then drag the list up slowly until the row is
+  wholly inside the list's frame (`TodoPlanTests.scrollIntoView`), rather than counting on where the mock's rows land.
+- **What shows for a few seconds is gone by the next query** (2026-11-16, #9225). `waitForExistence` checks about once a second, so it takes
+  a second even when the element is already there, and each scroll and query adds more. `MeetingAttendanceUITests` waited for the answer, then
+  for its Speaking label, then read Stop Speaking with a bare `.exists`. The mock's 3-second answer kept that row up for 4.3 s, and the
+  read came 0.1 s after it went. The button looked missing while the screen recording showed it with the label the whole time. Make what
+  you check on last long (the mock's `speak_seconds`, restored in `addTeardownBlock`) and end it yourself (tap Stop Speaking).
+  To tell a race from a missing element, line up the result bundle's screen recording with its activity times.
+  The app's terminate and relaunch are good anchors.
 - Body-count tests (`RenderBudgetTests`) wait for the page to settle before measurement (2026-11-03, #475). Launch still loads/layouts history, and the first measured `rev` push
   gets blamed for those bubbles, looking like "unchanged-screen push redraws 6 bubbles"; order changes or a second measurement remove it. Now wait for unchanged counts for 1 second (`settled()`).
 
@@ -798,6 +840,19 @@ Pin the visual style, not an alternate navigation tree. A shared launch helper t
   the wrong reason. Tap the switch itself: `(row.switches.firstMatch.exists ? row.switches.firstMatch : row).tap()`, as
   `ExtensionControlsUITests` and `AgentWorktreeUITests` do, and assert the value it reports (`"1"` / `"0"`) afterwards.
 
+## A hidden view that stays built is still in XCUITest's tree (2026-11-14, #7684)
+
+- Since #7586 the composer's dictation bar is built with the composer and only hidden while off, so a tap only animates
+  it. XCUITest (iOS 27.2) still listed its ✕ ■ ↑ at the mic's spot under their labels, so `app.buttons["发送"]` found the
+  off ↑: a tap fell through to the composer's send where the two lined up, a lookup with two matches failed to tap
+  (`PersonaQueueUITests`), and `ExtensionAssistantCardTests`' "no send" check failed in the main conversation.
+- Not enough, measured: `accessibilityHidden`, opacity 0, the whole bar as `.accessibilityElement(children: .ignore)` +
+  hidden, the identifier switched off (`accessibilityIdentifier(_:isEnabled: false)`: the button then shows its SF
+  Symbol's name, `arrow.up`, as identifier), an empty identifier (the label stays).
+- Out of the tree means not built. A view that must stay built drops its accessibility label and identifier while
+  hidden (`DictationBar`'s `named`): still listed, but no lookup by label or identifier finds it. `DictationBarTests`
+  checks that none of the bar's names is in the tree while it is off.
+
 ## XCUITest cannot tap while a list glides (2026-11-10, #3027)
 
 - **Every XCUITest gesture waits for the app to be idle, before and after**, and a scroll view gliding after a flick
@@ -870,6 +925,10 @@ return a valid answer immediately for all others, and bound blocked requests too
   tap those instead, or find multiple elements. Each passes alone but fails in the suite.
 - Start cases with corresponding `-open…Fresh YES` / `-show…Fresh YES` to clear leftovers (Lark uses `-showLarkSendFresh` in both `LarkSendTests` and `LarkAttachmentFlowTests`).
   **Remove the flag** on the relaunch that tests persistence, or it clears the very data under test.
+- A `-open…Fresh` flag at a case's start protects only that case: a draft the case types is saved (1 s debounce) and appears in the
+  next suite that opens the chat without the flag (2026-11-15, #8543). Clean up in `addTeardownBlock`, which runs after a failure too,
+  unlike `defer`: relaunch with `-openDraftsFresh YES`, keep the app up about 2 s for the save, then terminate
+  (`AssistantModelPickerUITests`). Typed deletes are not reliable for this: after a relaunch the caret can sit before a restored draft.
 - After adding UI test classes, run the whole suite sequentially, not only the new case.
 - `./scripts/test/test-server.sh … -run 'A|B'` became `bash: B: command not found` on hub, running nothing (2026-11-05, #1830): remote shell reparses ssh arguments and treats `|` as a pipe.
   Add another quote layer: `-run "'A|B'"`. Exit codes alone can look like test failure; inspect the final log lines first.
@@ -1118,3 +1177,5 @@ To check that a failure is this, move `dev.json` aside in the app's data contain
   drives) codesign fails with `errSecInternalComponent`. Run such a test where the resident node runs, in the login
   session: a one-shot job in `gui/$(id -u)` (`launchctl bootstrap`, then `bootout`); `launchctl managername` says `Aqua`
   there.
+
+- A temporary HOME does not keep a real node to its own transcripts (#8129). Besides its own config directory, a node takes the `CLAUDE_CONFIG_DIR` of every running claude process of the user (`server/internal/node/claudedirs.go`), so an end-to-end check that runs `personad node --stdio` beside the developer's own claudes lists their transcripts too, read-only, and can match sessions it never made. Pick out the run's own sessions (by ID, folder or engine, as `integrations/paseo/e2e/run.mjs` does), or run the node with the session scope (`PERSONA_NODE_SESSION_DIR`, as `integrations/paseo/e2e/codex.mjs` does) when every session it should see is under one folder. Keeping the node from that scan is no fix either: tried for the Paseo e2e (an environment switch, since dropped), it changed the node's timing enough that races elsewhere (the node tying a message's echo before the runtime's list named its transcript, a check reading the list before the node pushed it after the bridge left) failed four runs in five on Paseo 0.15.4, where the same bridge with the scan on passed five of five.

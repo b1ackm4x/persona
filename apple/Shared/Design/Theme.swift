@@ -4,6 +4,7 @@ import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
+import PersonaWire
 
 /// How the whole app is drawn, picked in Settings › Interface Style: panels, cards and buttons, the page they sit on, the type,
 /// the components. The colors are Theme Color (`ThemeColor`), a choice of its own; `StyleSpec` puts the two together.
@@ -40,6 +41,26 @@ nonisolated enum AppStyle: String, CaseIterable, Identifiable, Sendable {
 
 nonisolated enum Theme {
     #if os(iOS)
+    /// A split's list column slid by a finger (#4206, `SplitColumnControl`).
+    enum Split {
+        /// How much of the blur over the pictures a drag reaches (a fraction of `.systemUltraThinMaterial`'s).
+        static let dragBlur: CGFloat = 0.8
+        /// How far the finger goes, in points, before the blur is at its most: none as it lands.
+        static let blurReach: CGFloat = 80
+        /// Faster than this, in points a second, the fling decides where the column settles, not how far it went.
+        static let fling: CGFloat = 500
+        /// How long the line takes to settle out or away after the finger lets go.
+        static let settle: TimeInterval = 0.28
+        /// How long the pictures take to fade once the line has settled, the split under them as it ends.
+        static let fade: TimeInterval = 0.2
+        /// The guide line on the line between the column and the page while a finger moves it, in the theme color (as
+        /// Feishu's; measured there at about 3 pt).
+        static let guide: CGFloat = 3
+        /// How dark the system lays a page under the column over it (measured: the page at 0.8 of its light); the drag's
+        /// page picture is taken without it and darkens as the column comes out.
+        static let overDim: CGFloat = 0.2
+    }
+
     /// By Repository's tree on iOS (#2531): a card per repository, its worktrees and their agents a level in each, every
     /// line's mark in one column per level; the agents in the display's rows (#3753).
     enum Tree {
@@ -53,21 +74,6 @@ nonisolated enum Theme {
         static let selected = Palette.systemBlue.opacity(0.1)
     }
     #endif
-
-    /// The handle on the line between a split's list and its page (#2624, `SplitDividerHandle`).
-    enum Split {
-        static let handle = Color.secondary.opacity(0.45)
-        static let handleHeld = Color.secondary.opacity(0.8)
-        /// Its touch area: narrow (what it takes from the list's and the page's edges), tall.
-        static let handleWidth: CGFloat = 28
-        static let handleHeight: CGFloat = 88
-        /// How far it moves before it is a drag; past the least width, how far until letting go closes the list; from
-        /// the page's edge, how far to the right brings the list back; a step of VoiceOver's adjust.
-        static let slop: CGFloat = 6
-        static let closesPast: CGFloat = 80
-        static let opensPast: CGFloat = 40
-        static let step: CGFloat = 40
-    }
 
     /// Orca-compatible workspace cards. Scoped to repository browsing, including nested selection surfaces.
     enum WorkspaceSidebar {
@@ -169,6 +175,9 @@ nonisolated enum Theme {
     static let loop = Color(light: 0x2E6FD0, dark: 0x5B9BFF)
     /// Count badges on rows (unread messages): white text on it is ≥ 4.5:1 in both appearances.
     static let countBadge = Color(light: 0x636366, dark: 0x636366)
+    /// The count on a tab bar's item, as the system's tab bar draws `.badge` (white on its red), the iPad's included: iPhone
+    /// Duo's tab bar (#4231).
+    static let tabBarBadge = Color.red
     static let onSolid = Color.white
 
     /// A code to scan with another app (a QR code): dark modules on a light ground in both appearances, the way
@@ -219,7 +228,7 @@ nonisolated enum Theme {
     enum Radius {
         /// A file's thumbnail in a list row, about an icon's size (the Files tab): a page's corner, not a tile's.
         static let thumbnail: CGFloat = 3
-        /// Badges, inline code, small marks.
+        /// Badges, small marks.
         static let badge: CGFloat = 6
         /// Code blocks, thumbnails, segmented controls, small tiles.
         static let control: CGFloat = 10
@@ -348,6 +357,8 @@ nonisolated enum Theme {
         }
         /// The home page's greeting, the welcome page (24 bold).
         static var display: SwiftUI.Font { sized(.display, .bold) }
+        /// The display level unemphasized: "(Persona)" after the name in a screenshot's banner (#9508, 24 regular).
+        static var displayPlain: SwiftUI.Font { sized(.display) }
         /// A detail page's or a sheet's title (18 semibold).
         static var title: SwiftUI.Font { sized(.title, .semibold) }
         /// Titles of rows, cards, panels and Markdown headings below the first (13 semibold).
@@ -410,6 +421,8 @@ nonisolated enum Theme {
         static let labelStrong = label.weight(.semibold)
         static let labelMedium = label.weight(.medium)
         static let labelHeavy = label.weight(.bold)
+        /// The display level unemphasized: "(Persona)" after the name in a screenshot's banner (#9508, 28 regular).
+        static let displayPlain = display.weight(.regular)
 
         #if os(iOS) || os(visionOS)
         /// `body` for a UIKit control inside a SwiftUI page (the hidden `SecretField`): the same text style, so it
@@ -599,6 +612,8 @@ nonisolated enum Theme {
         static let tabName: CGFloat = 120
         static let box140: CGFloat = 140
         static let box150: CGFloat = 150
+        /// A file's card above the composer (#8361): a name of about 14 characters whole, and the next card showing.
+        static let box160: CGFloat = 160
         static let box180: CGFloat = 180
         static let box200: CGFloat = 200
         static let box240: CGFloat = 240
@@ -619,13 +634,19 @@ nonisolated enum Theme {
         static let headerTitle: CGFloat = 480
         /// The list column of a split on iPad: wide enough for the agents' cards and the inbox rows.
         static let sidebarMin: CGFloat = 340
-        /// The least an iPhone Duo's list column is dragged to (#2624): its open display is narrower than an iPad.
-        static let sidebarMinPhone: CGFloat = 200
-        /// What a split's page keeps beside its list column when the list is dragged wider (#2624).
-        static let splitDetailMin: CGFloat = 300
+        /// The open iPhone Duo's list column, its one width (#4206), upright over the page and on its side beside it: as
+        /// wide as ChatGPT's sidebar on the open Duo (320 of its 669 pt upright, leaving the page most of its 951 pt on its
+        /// side). The system's own was about 199 pt upright and 239 on its side, too narrow for the sidebar's rows.
+        static let sidebarPhone: CGFloat = 320
+        /// The narrowest a split's page gets beside its list column (iOS, `SplitPageMin`), no narrower than a large phone's
+        /// screen: where the column would leave the page less, it lies over the page instead (the open iPhone Duo and an
+        /// iPad mini, upright). At 349 pt beside the Duo's 320 pt column the split could not settle whether the page fit,
+        /// put the column away and back on every frame, and the scene ran out of its 10 seconds (#4206).
+        static let splitPageMin: CGFloat = 400
         /// The knowledge map's outline and detail column side by side from this width (#7251): any iPad in landscape,
         /// a 13-inch one upright beside its sidebar, a large iPhone turned; narrower, the outline alone.
         static let knowledgeMapTwoColumns: CGFloat = 540
+        /// The iPad's list column, its one width (#4206).
         static let sidebar: CGFloat = 400
         static let sidebarMax: CGFloat = 480
         /// The narrowest column of a card grid (Machines' cards): two side by side in an iPad's detail column.
@@ -693,6 +714,32 @@ nonisolated enum Theme {
         /// The hour lines and the columns' edges; the line under the all-day row is `lineStrong`.
         static let line = Color.primary.opacity(0.1)
         static let lineStrong = Color.primary.opacity(0.18)
+    }
+
+    /// A heat grid (`HeatGrid`, docs/design/DESIGN_SYSTEM.md 3.15): the token calendar's squares, a day each (a column a
+    /// week) or an hour each (a row a day), in the theme color's steps from faint to full and no usage in the neutral
+    /// fill. The squares keep their size at every text size; a wider screen shows more weeks.
+    enum Heat {
+        /// A day's square and the room between two: 19 weeks across an iPhone's card.
+        static let cell: CGFloat = 13
+        static let gap: CGFloat = 3
+        static let radius: CGFloat = 3
+        /// An hour's square on the last week's grid: as wide as 24 fit, this high, this far apart.
+        static let hourHeight: CGFloat = 15
+        static let hourGap: CGFloat = 2
+        /// The fewest and the most weeks a calendar shows.
+        static let minWeeks = 8
+        static let maxWeeks = 53
+        /// The theme color's strength at each step above none (`HeatLevels`, four steps).
+        static let steps: [Double] = [0.28, 0.5, 0.75, 1]
+        /// Today's outline and the picked square's.
+        static let todayLine: CGFloat = 1.5
+        static let pickedLine: CGFloat = 2
+
+        /// A square at step `level`: 0 is no usage, 1 to 4 the theme color's steps.
+        static func fill(_ level: Int) -> Color {
+            level <= 0 ? Theme.Fill.chip : Theme.accent.opacity(steps[min(level, steps.count) - 1])
+        }
     }
 
     /// Motion: a state change snaps, a layout change glides. Nothing repeats except the Needs You dot, the work spinner,
@@ -866,8 +913,6 @@ nonisolated enum Theme {
         static let cropThirdsOpacity = 0.45
     }
 
-    /// Hold the mic to dictate, slide left to drop it, slide up to keep it going hands-free: Telegram's thresholds
-    /// for its voice button (`DictationHold`).
     /// The composer's dictation bar (`DictationBar`, ChatGPT's): [✕] the wave [■] [↑] in the composer's capsule.
     enum DictationBar {
         /// A quiet column's dot, and the room from one column's centre to the next.
@@ -895,6 +940,9 @@ nonisolated enum Theme {
         /// A column's ink, quiet and at full voice.
         static let quietInk = 0.5
         static let loudInk = 1.0
+        /// After the bar closed, how long ■ and ↑ keep their order before following the mic's place again: past the bar's
+        /// close (`Theme.Motion.dictationOut`, 0.32 s), so they never swap while they fade (#9619).
+        static let reorderAfter: TimeInterval = 0.4
         /// After stop or send, how long the recognizer may take for its last words before the bar settles for what it has.
         static let finalWait: Duration = .milliseconds(1200)
         /// The bar's parts while it is off: drawn, but not seen. Fully transparent, SwiftUI skips drawing them, and their first
@@ -914,32 +962,25 @@ nonisolated enum Theme {
         static let inkSteps = 12
     }
 
+    /// Hold a mic to dictate while held, slide left to drop it (`DictationHold`, `MicPress`, #9619): Telegram's thresholds
+    /// for its voice button, but a longer wait before a touch counts as a hold, and no lock (a tap keeps it on).
     enum Hold {
-        /// A touch held this long is a hold; let go sooner it is a tap (dictation on or off, as before).
-        static let delay: Duration = .milliseconds(190)
-        /// While the finger is down, this far left drops what was heard, this far up locks.
+        /// A touch held this long is a hold; let go sooner it is a tap (dictation on or off). Telegram's 0.19 s took a
+        /// slow tap for a hold that ended, having heard nothing, as the finger lifted.
+        static let delay: Duration = .milliseconds(300)
+        /// While the finger is down, this far left drops what was heard.
         static let cancelDistance: CGFloat = 150
-        static let lockDistance: CGFloat = 110
         /// Let go: a shorter slide counts, or a quick flick.
         static let releaseCancelDistance: CGFloat = 100
-        static let releaseLockDistance: CGFloat = 60
         static let flickSpeed: CGFloat = 400
-        /// How far up the lock's progress runs, and how far the label stays put before it follows the finger, at half its pace.
-        static let lockTravel: CGFloat = 105
+        /// How far the label stays put before it follows the finger, at half its pace.
         static let labelDeadZone: CGFloat = 8
         static let labelFollow: CGFloat = 0.5
         static let labelFade: CGFloat = 10
-        /// The lock's arrow is gone a little past halfway up.
-        static let lockArrowFade: CGFloat = 1.6
         /// The circle under the finger, and how small it gets as the finger slides toward cancel.
         static let circle: CGFloat = 96
         static let circleSlide: CGFloat = 300
         static let circleSmallest: CGFloat = 0.4
-        /// The lock's pill above the mic: its size, and how far above the mic's centre it sits.
-        static let lockWidth: CGFloat = 40
-        static let lockHeight: CGFloat = 72
-        static let lockShrink: CGFloat = 32
-        static let lockLift: CGFloat = 122
     }
 
     /// Categories with no meaning beyond telling them apart (memory types).
@@ -947,7 +988,7 @@ nonisolated enum Theme {
         static let blue = Color(light: 0x2E6FD0, dark: 0x5B9BFF)
         static let orange = Color(light: 0xB35400, dark: 0xFF9F0A)
         static let green = Color(light: 0x1D7A4C, dark: 0x4CC38A)
-        static let purple = Color(light: 0x7A5AF8, dark: 0x9D8BFF)
+        static let purple = Palette.purple
         /// System indigo.
         static let indigo = Color(light: 0x5856D6, dark: 0x5E5CE6)
         /// Health's heart (the health space, docs/assistant/health.md).
@@ -1030,9 +1071,24 @@ nonisolated enum Theme {
         static let agentsRoom: CGFloat = 34
         /// The optional third segment must leave both side buttons reachable on narrow screens.
         static let compactSwitchLargestTypeSize: DynamicTypeSize = .large
-        /// A segment of the switch on iPhone Duo's side rail (`ShellSideRail`): square, a symbol over the page's name, within
-        /// the column the system's bars take beside the content.
-        static let railSegment: CGFloat = 54
+        /// The switch as iPhone Duo's tab bar (#4231: `ShellSwitch(axis: .vertical)` in the side column of the outer display
+        /// and of the inner one on its side, `ShellSwitch(bottomBar: true)` along the inner one's foot upright): a bar of fixed
+        /// items, as the system's tab bar it stands for, so its items keep the default text size (DESIGN_SYSTEM.md 6.2), each
+        /// also shown large on a long press (the Large Content Viewer).
+        static let switchTypeSize: DynamicTypeSize = .large
+        /// A tab bar item there: the page's symbol in a `Size.well` circle over its name, a tap target wide and tall and
+        /// more, so the names fit in every language (「メッセージ」 at the least scale).
+        static let tabBarItemWidth: CGFloat = 56
+        static let tabBarItemHeight: CGFloat = 56
+        /// iPhone Duo's side column, where the system puts its bars down the side (both displays: an 84 pt safe-area
+        /// inset): the strip at the screen's edge the system's bars keep clear of. The status bar is centred on the rest of
+        /// the column (its clock 49 pt from the edge on both displays), and so is the side tab bar.
+        static let sideColumnEdge: CGFloat = 14
+        /// Where the side tab bar's foot stands where nothing is under it in the column (the open Duo's tabs): this share of
+        /// the column's height (the safe area's) above its foot, so the bar is in the lower middle of the column, as a tab
+        /// bar down the side of the outer display stands (the owner's reference, #4231), not a small block at the foot. On
+        /// the outer display's rail the face and the page's action are under it.
+        static let sideTabBarFoot: CGFloat = 0.25
     }
 
     /// The page behind lists and chats.
@@ -1043,8 +1099,6 @@ nonisolated enum Theme {
 
     static let primaryText = Color(light: 0x1C1C1E, dark: 0xF2F2F7)
     static let codeBackground = Color(light: 0xF3F1EC, dark: 0x1C1D21)
-    /// Inline code in a reply (#2984): a light gray under the body's color (blue is for what opens).
-    static let inlineCodeBackground = Color(light: 0xEBEBEF, dark: 0x2C2C31)
     /// A reply's code block's title bar (#2984): its language and Copy, a shade off `codeBackground`.
     static let codeBar = Color(light: 0xE8E5DE, dark: 0x27282D)
     /// A reply's quote (#2984): its card under the accent bar, the accent faint.

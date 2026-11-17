@@ -3,7 +3,7 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { t } from "../../i18n";
 import { api, errorText } from "../../lib/api";
-import { onHubEvent } from "../../lib/store";
+import { onShownHint } from "../../lib/shown-hints";
 import { filterQuery, SessionList, type ListCounts, type ListFilters } from "../../lib/session-list";
 import { groupMachines, holdsPlace, type GroupDimension, type SessionGroup, type SessionPlace, type TodoNames } from "../../lib/session-groups";
 import { SESSION_LIST_METRICS, SESSION_LIST_STYLE } from "../../ui/list-metrics";
@@ -46,6 +46,8 @@ export interface PagedSessionListProps<T> {
   /** The hub names this collection's projects and spaces (`sessions_catalog`): a repository checked out on several
    *  computers is one project, a space is one computer's. Without it the groups are the count maps' paths and ids. */
   catalog?: boolean;
+  /** The hub lists the Just finished rows apart (`sessions_just_finished`, #9751): By state draws them a section. */
+  justFinished?: boolean;
   /** Where a row is, as the hub groups by it: the group holding the open row opens by itself. */
   placeOf?: (row: T) => SessionPlace;
   /** "Active within" (#4236): a row's last activity in ms, the key `compare` orders by, newest first. Given, the list
@@ -109,7 +111,7 @@ export function scrollParent(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-export function PagedSessionList<T>({ root, path, identity, compare, removeIdentity, event, renderRow, personal = false, label, catalog = false, placeOf, activeAt, needsYou, isOpen, parentOf, grouping, failureText = sameText }: PagedSessionListProps<T>) {
+export function PagedSessionList<T>({ root, path, identity, compare, removeIdentity, event, renderRow, personal = false, label, catalog = false, justFinished = false, placeOf, activeAt, needsYou, isOpen, parentOf, grouping, failureText = sameText }: PagedSessionListProps<T>) {
   const [query, setQuery] = useState("");
   const [typed, setTyped] = useState("");
   // the sidebar's groupings take ⌘K's words (#6589); every other list its own field's, once typing pauses
@@ -156,7 +158,8 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
   const summaryMode = root.isSummary();
   // a hub that folds child sessions (#5120): every read and count of this list leaves them out, as the root's do
   const rootsMode = root.isRoots();
-  const countsPath = rootsMode ? `${path}?roots=1&` : `${path}?`;
+  const queryPath = `${path}${path.includes("?") ? "&" : "?"}`;
+  const countsPath = rootsMode ? `${queryPath}roots=1&` : queryPath;
   const list = useMemo(() => filtered ? new SessionList<T>(path, identity, compare, undefined, removeIdentity, { summary: summaryMode, roots: rootsMode, pageCounts: () => root.usesPageCounts() }) : root, [filtered, path, identity, compare, removeIdentity, summaryMode, rootsMode, root, filters]);
   const page = useSyncExternalStore(list.subscribe, list.getSnapshot, list.getSnapshot);
   const [facets, setFacets] = useState<ListCounts | null>(null);
@@ -203,7 +206,7 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
       }, (e) => { if (live && request === sequence) setFacetError(errorText(e)); });
     };
     read();
-    const off = onHubEvent(event, read);
+    const off = onShownHint(event, read);
     return () => { live = false; controller.abort(); off(); };
   }, [countsPath, event, facetScoped, facetsFromList, facetQuery, facetAttempt]);
   useEffect(() => {
@@ -230,16 +233,18 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
       }, (e) => { if (request === sequence) setScopeError(errorText(e)); });
     };
     read();
-    const off = onHubEvent(event, read);
+    const off = onShownHint(event, read);
     return () => { sequence++; abort.abort(); off(); };
   }, [scopeQuery, scopeFromFacets, countsPath, event]);
   useEffect(() => {
-    // the root list is kept loaded either way (its counts are the unscoped facets); a filtered one only while shown
-    if (filtered && sections) return;
-    if (filtered) void list.setFilters(filters).catch(() => {});
-    else if (!list.getSnapshot().loaded) void list.load().catch(() => {});
-    const off = filtered ? onHubEvent(event, () => list.invalidate()) : () => {};
-    return () => { off(); if (filtered) list.reset(); };
+    // Even a grouped, filtered list needs the root counts for the unfiltered chips.
+    if (!root.getSnapshot().loaded) void root.load().catch(() => {});
+  }, [root, summaryMode, rootsMode]);
+  useEffect(() => {
+    if (!filtered || sections) return;
+    void list.setFilters(filters).catch(() => {});
+    const off = onShownHint(event, () => list.invalidate());
+    return () => { off(); list.reset(); };
   }, [list, filters, filtered, sections, event]);
 
   // The groups of the chosen dimension, for the value pill and the sections: everything that narrows the list but the
@@ -253,7 +258,7 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
     if (facetScoped) setFacetAttempt((n) => n + 1);
     else void root.retry().catch(() => {});
   }, [facetScoped, root]);
-  const grouped = useSessionGroups({ dimension, catalog: cataloged, countsPath, scope: groupScope, facets, facetQuery, facetsError: facetsFailure, retryFacets, waiting: sections ? scopeNeeds : 0, event, todos: grouping?.todos });
+  const grouped = useSessionGroups({ dimension, catalog: cataloged, countsPath, scope: groupScope, facets, facetQuery, facetsError: facetsFailure, retryFacets, waiting: sections ? scopeNeeds : 0, event, todos: grouping?.todos, justFinished });
   // "Recently updated" as the complete list orders its computers and spaces (lib/agent-sort.ts): by their newest session,
   // as far as the root's newest page tells (the hub reads no group's time); the ones it has none of keep their order
   // after them, and the sessions on no space stay last. Its to-dos keep the To-dos page's order there too.
@@ -341,7 +346,7 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
     const parent = getScrollElement();
     if (!parent) return;
     const maybeMore = () => {
-      if (!sections && scrolled.current && hasMore && !page.loading && !page.error &&
+      if (!sections && scrolled.current && hasMore && !page.loadingMore && !page.error &&
           parent.scrollTop + parent.clientHeight >= margin + totalSize - SESSION_LIST_METRICS.overscan * SESSION_LIST_METRICS.estimate) {
         void list.more().catch(() => {});
       }
@@ -350,7 +355,7 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
     parent.addEventListener("scroll", scroll, { passive: true });
     maybeMore();
     return () => parent.removeEventListener("scroll", scroll);
-  }, [list, getScrollElement, sections, hasMore, page.loading, page.error, margin, totalSize]);
+  }, [list, getScrollElement, sections, hasMore, page.loadingMore, page.error, margin, totalSize]);
 
   const stateTotals = scopeCounts?.state ?? {};
   // the quick filters' numbers, as the complete list counts them: Working without the ones waiting in the background
@@ -394,7 +399,7 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
   const autoMore = useRef(0);
   useEffect(() => {
     // Load to the open row's group, stopping on a repeated page (#7327).
-    if (!sections || !isOpen || !placeOf || openRow || !rootPage.hasMore || rootPage.loading || rootPage.error) return;
+    if (!sections || !isOpen || !placeOf || openRow || !rootPage.hasMore || rootPage.loadingMore || rootPage.error) return;
     const rows = rootPage.rows.length;
     if (autoMore.current > rows) autoMore.current = 0;
     if (autoMore.current === rows) return;
@@ -478,10 +483,11 @@ export function PagedSessionList<T>({ root, path, identity, compare, removeIdent
           );
         })}
       </div>
-      {page.loading && loadingLine}
+      {/* a background refresh moves nothing: only a first read or a page someone asked for says Loading (#9215) */}
+      {page.loading && (!page.loaded || page.loadingMore) && loadingLine}
       {page.error && <ListError text={failureText(page.error)} onRetry={() => void list.retry().catch(() => {})} />}
       {page.loaded && !page.loading && !page.error && !page.rows.length && <p className="px-2 py-2 text-xs text-ink-3">{t("sidebar.no_match")}</p>}
-      {hasMore && !page.loading && !page.error && <ShowMoreRow label={t("paged-agents.more")} onClick={() => void list.more().catch(() => {})} />}
+      {hasMore && !page.loadingMore && !page.error && <ShowMoreRow label={t("paged-agents.more")} onClick={() => void list.more().catch(() => {})} />}
       </>}
     </div>
   );

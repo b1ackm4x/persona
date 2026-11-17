@@ -25,6 +25,7 @@ const AGENT_SETTINGS: { name: string; anchor: string; keys: string[] }[] = [
   { name: "Claude Code", anchor: "settings-claude", keys: ["effortLevel", "alwaysThinkingEnabled", "awaySummaryEnabled", "language", "promptSuggestionEnabled", "spinnerTipsEnabled", "prefersReducedMotion", "autoUpdatesChannel"] },
   { name: "Codex", anchor: "settings-codex", keys: ["model", "model_reasoning_effort", "service_tier", "model_reasoning_summary", "model_verbosity", "approval_policy", "sandbox_mode", "hide_agent_reasoning", "show_raw_agent_reasoning"] },
   { name: "Antigravity", anchor: "settings-agy", keys: ["model", "agentMode"] },
+  { name: "Grok", anchor: "settings-grok", keys: ["models.default", "models.default_reasoning_effort", "ui.permission_mode", "ui.yolo", "ui.compact_mode"] },
 ];
 
 /** What the search box matches beyond the categories (a curated static index): the pages' group headings and, by their
@@ -39,6 +40,8 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "general", group: t("language.label"), anchor: "language" },
   { tab: "general", group: t("settings.reply_motion"), anchor: "reply-motion" },
   { tab: "general", group: t("ui-look.recent_chats"), anchor: "recent-chats" },
+  { tab: "general", group: t("settings.start_page"), anchor: "start-page" },
+  { tab: "general", group: t("settings.start_page_open_on"), hint: t("settings.start_page_main"), anchor: "open-on" },
   { tab: "general", group: t("settings.sidebar_pages"), anchor: "sidebar-pages" },
   // General › Translation (its language and what it translates show once it is on)
   { tab: "general", group: t("settings-nav.tab_translate"), anchor: "settings-translation" },
@@ -49,7 +52,6 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "general", group: t("settings.agent_preferences"), hint: words(t("terminal-full.mode_group"), t("settings.sidebar_terminals")), anchor: "agent-preferences" },
   { tab: "general", group: t("settings-agentopen.label"), hint: words(t("settings-agentopen.panel"), t("settings-agentopen.page")), anchor: "agent-open" },
   { tab: "general", group: t("context.details"), anchor: "agent-details" },
-  { tab: "general", group: t("context.as_used"), anchor: "context-as-used" },
   // General › hubs, this browser, about
   { tab: "general", group: t("hubs.group_title"), hint: t("hubs.add_hub"), anchor: "hubs" },
   { tab: "general", group: t("settings.this_browser"), hint: words(t("settings.hub"), t("settings.linked_hubs")), anchor: "this-browser" },
@@ -62,6 +64,7 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "persona", group: t("settings-assistantsettings.routines"), hint: t("settings-assistantsettings.proactive_title"), anchor: "routines" },
   { tab: "persona", group: t("settings-assistantsettings.quiet_tasks"), anchor: "quiet-tasks" },
   { tab: "persona", group: t("settings-assistantsettings.background_folded"), anchor: "background-folded" },
+  { tab: "persona", group: t("settings-assistantsettings.recent_task_chats"), anchor: "recent-task-chats" },
   { tab: "persona", group: t("settings-assistantsettings.next_suggestions"), anchor: "next-suggestions" },
   { tab: "persona", group: t("settings-assistantsettings.start_requested"), hint: t("settings-assistantsettings.start_title"), anchor: "start-requested" },
   { tab: "persona", group: t("settings-assistantsettings.workspace_preference"), anchor: "workspace-preference" },
@@ -77,6 +80,7 @@ export const SEARCH_INDEX: SearchGroup[] = [
     anchor: "agents",
   },
   { tab: "persona", group: t("settings-assistantsettings.default_permissions"), anchor: "default-permissions" },
+  { tab: "persona", group: t("settings-assistantsettings.readonly_mode"), anchor: "readonly-mode" },
   { tab: "persona", group: t("settings-standing.title"), anchor: "standing-authorizations" },
   { tab: "persona", group: t("settings-assistantsettings.meeting_attendance"), hint: t("settings-assistantsettings.meetings_title"), anchor: "meetings" },
   { tab: "persona", group: t("settings-assistantsettings.recordings_title"), hint: words(t("settings-assistantsettings.recording_days"), t("settings-assistantsettings.minutes_days")), anchor: "recordings" },
@@ -111,6 +115,7 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "agents", group: "Codex", anchor: "settings-codex" },
   { tab: "agents", group: "Antigravity", anchor: "settings-agy" },
   { tab: "agents", group: "omp", anchor: "settings-omp" },
+  { tab: "agents", group: "Grok", anchor: "settings-grok" },
   ...AGENT_SETTINGS.flatMap(({ name, anchor, keys }) => keys.map((key): SearchGroup => ({ tab: "agents", group: path(name, t(`lib-agent-settings.setting_${key}`)), anchor }))),
   { tab: "knowledge", group: t("settings-knowledge.topics_title"), anchor: "knowledge-topics" },
   { tab: "knowledge", group: t("settings-knowledge.topics_switch"), anchor: "knowledge-topics-switch" },
@@ -126,6 +131,8 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "notifications", group: t("settings-notifications.input"), anchor: "notify-input" },
   { tab: "notifications", group: t("settings-notifications.done_title"), anchor: "done" },
   { tab: "notifications", group: t("settings-notifications.quiet"), hint: words(t("settings-notifications.quiet_start"), t("settings-notifications.quiet_end")), anchor: "notify-quiet" },
+  // the hub's switch (#8157), by its group, which it draws on any hub and while it loads (LowDistractionSettings.tsx)
+  { tab: "notifications", group: t("settings-notifications.low_distraction"), hint: t("settings-notifications.low_distraction_hint"), anchor: "low-distraction" },
   // Connectors
   { tab: "connectors", group: t("settings-connectors.mail"), anchor: "mail" },
   { tab: "connectors", group: t("settings-connectors.lark"), anchor: "lark" },
@@ -141,10 +148,10 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "shortcuts", group: t("settings-shortcutsettings.terminal_title"), anchor: "shortcuts-terminal" },
   ...LOCAL_SHORTCUTS.map((s): SearchGroup => ({ tab: "shortcuts", group: s.label, anchor: `shortcut-${s.id}` })),
   // This hub
-  { tab: "hub", group: t("settings-hubsettings.version"), hint: t("settings-hubsettings.last_check"), anchor: "hub-version" },
-  { tab: "hub", group: t("settings-hubsettings.channel"), anchor: "hub-channel" },
-  { tab: "hub", group: t("settings-hubsettings.update"), anchor: "hub-update" },
-  { tab: "hub", group: t("settings-hubsettings.auto_update"), anchor: "hub-auto-update" },
+  { tab: "hub", group: t("settings-hubsettings.version"), hint: words(t("settings-hubsettings.last_check"), t("settings-hubsettings.branch"), t("settings-hubsettings.current_commit"), t("settings-hubsettings.latest_commit")), anchor: "hub-version" },
+  { tab: "hub", group: t("settings-hubsettings.channel"), hint: words(t("settings-hubsettings.source"), t("settings-hubsettings.web_dev")), anchor: "hub-channel" },
+  { tab: "hub", group: t("settings-hubsettings.update"), hint: words(t("settings-hubsettings.update_version"), t("settings-hubsettings.target_commit"), t("settings-hubsettings.backup_created_at")), anchor: "hub-update" },
+  { tab: "hub", group: t("settings-hubsettings.auto_update"), hint: t("settings-hubsettings.computer_auto"), anchor: "hub-auto-update" },
   { tab: "hub", group: t("workspace-board.setting_label"), anchor: "workflow-board" },
   { tab: "hub", group: t("settings-hubsettings.mirrors"), hint: words(t("settings-hubsettings.registry_mirror"), t("settings-hubsettings.catalog_mirror")), anchor: "mirrors" },
   // Devices: the list (each with its own token, revoked there) and pairing a new one

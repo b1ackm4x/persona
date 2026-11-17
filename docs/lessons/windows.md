@@ -6,9 +6,11 @@ Read this before changing the Windows node (#1090), or developing or testing `pe
 
 - **Check out the repository with LF endings**: Git for Windows defaults to `core.autocrlf=true`, so every checked-out `.go` file has CRLF endings. `gofmt -l` reports many files, and scripts and golden files can also fail to match.
   After cloning, run `git config core.autocrlf false && git config core.eol lf` in this repository, then `git rm -q --cached -r . && git reset -q --hard` to check it out again (commit or stash your changes first).
+- **Retained third-party bytes must bypass text conversion**: `-whitespace` only controls whitespace checks; it does not keep `core.autocrlf=true` from changing checkout or archive bytes. Use `-text` for checksum-pinned notices and inventories. Preserve their original LF, CRLF or mixed endings instead of normalizing them or updating their pins to match a converted copy. Test staging, checkout and archive behavior with autocrlf enabled, including ordinary neighboring files that should still convert (#9342).
 - **Unix socket paths must not exceed 108 bytes**: Go supports AF_UNIX on Windows, but a long path makes `bind` return `invalid argument` (not “unsupported”).
   Paths such as `~/.persona/node-attach.sock` are fine; do not put test sockets deep inside temporary directories (Claude Code's scratchpad exceeded the limit).
 - **`/tmp` is not the temporary directory**: On Windows, `os.MkdirTemp("/tmp", …)` means `\tmp` on the current drive, which usually does not exist. Tests that need short paths should use platform-specific files (`listen_*.go` in `orcarttest`).
+- **Windows Python has no `fcntl`**: a repository script that locks with `fcntl.flock` fails with `ModuleNotFoundError` under Git Bash. One that must run on a Windows dev machine locks with `msvcrt.locking` there (`LK_NBLCK` on the first byte, trying again while it raises `PermissionError`), as `scripts/hooks/merge-pr.sh` and `scripts/operations/pr_watch_merge.py` do; two programs sharing a lock file must lock the same byte (seek to 0 first: `open("a+")` starts at the end). Its `subprocess.run(["bash", …])` also searches System32 before PATH, where `bash.exe` is WSL's: take `shutil.which("bash")`.
 
 ## Processes and shells
 
@@ -27,11 +29,16 @@ Read this before changing the Windows node (#1090), or developing or testing `pe
 - **Environment-variable values can contain spaces**: Whitespace-splitting regexes such as `envVarRe` are for `ps -E`; they truncate `C:\Users\A B\.claude`. On Windows, fetch the complete value by name (`pickEnv`); names are case-insensitive.
 - **There is no “foreground process group” or “suspended” state**: On Windows, the Orca host considers claude / codex foreground when its parent-process chain contains no agent process for the same pane. See [windows.md](../operations/windows.md) (“Orca”).
 - **PIDs are reused quickly and do not increase monotonically**: Sorting by PID to put wrappers first does not work on Windows. Sort by start time; when walking the parent chain, require ancestors to have started before the current process.
+- **Git Bash breaks the process tree**: MSYS2 emulates `fork`, and for `cd x && cmd` the forked bash that runs `cmd` as a new Windows process exits, so `cmd`'s parent pid names a process that is gone. A walk down from the agent (port discovery) or up to it misses everything below that point, and whether it happens depends on the command line: a lone `python -m http.server` keeps its chain, `cd dir && npx …` loses it (#9815).
+  Claude Code's Bash tool is Git Bash on Windows, so this is the usual case, not an edge. A process's engine pane variables (`ORCA_PANE_KEY`, `HERDR_PANE_ID`…) survive it: MSYS passes the environment through its fork and exec. Use them where the tree comes up empty.
 
 ## Paths the hub reads
 
 - **A Windows node's paths reach a hub that may not be Windows**: the node reports directories as `C:\Users\…`, and on a Linux or macOS hub `filepath` splits only at `/`, so `filepath.Base` returns the whole path. `identity`'s directory checks (`IsAssistantDir`, `IsAssistantDirOf`, `SpaceOf`, `InHealthSpace`) missed the computer's assistant and health directories, and its main chat conversations never reached the Persona tab (#6419). `filepath.ToSlash` does not help there: it converts nothing off Windows.
   Code on the hub or a manager that takes apart a directory a node sent reads it through `identity.NodePath` first: a path with a drive letter or a `\\server\` prefix gets forward slashes on a hub that is not Windows, and anything else stays as it is. Test such code with Windows paths and run the test on Linux, not only on the computer you develop on.
+- **`path` is not a node's syntax either**: it knows only `/` on every system, Windows included. Task workspaces checked the node's answers with `path.IsAbs`, so a Windows computer's `C:\…` was never absolute, and every writable task in a Git directory there failed with "Workspace C:\… is not an available absolute directory" (#7106).
+  A path that is checked or joined and then sent back to its node goes through `proto.NodeAbs`, `proto.NodeClean` and `proto.NodeJoin`. They keep the node's own syntax (backslashes, an upper-case drive letter, a root of `C:\` or `\\server\share` that `..` cannot climb out of), so the node reads the result as its own path.
+  Two of a node's paths compare by `proto.NodeKey`, which also ignores case for a Windows path: `C:\Code\App` and `c:\code\app` are one directory there. Keys are for comparing only; never send one to the node.
 
 ## Scheduled tasks (automatic startup)
 
@@ -130,6 +137,9 @@ See [windows.md](../operations/windows.md) ("Codex") and [codex.md](../integrati
   `orcart` selects the transport by platform: on Windows, `named-pipe` first (`tailscale/go-winio` for dialing), then `unix`; on other platforms, only `unix`. The protocol (one JSON per line) is unchanged.
 - Orca terminals have `ORCA_PANE_KEY` / `ORCA_AGENT_PANE`, just like macOS, plus `ORCA_USER_DATA_PATH` (`%APPDATA%\orca`).
 - Paths in the `topologyRevisions` keys of `terminal.list` mix separators (`C:/Users/…` and `C:\Users\…` on the same computer). Do not compare them directly to `worktreePath` as strings.
+- **Orca's terminals run Windows PowerShell 5.1 unless the user changed Orca's `terminalWindowsShell`**. A POSIX line typed there (`cd -- '…' && …`, `'\''` quoting) leaves no error in any log: PowerShell rejects `&&`, or an odd count of quotes leaves it at its `>>` continuation prompt, and the node waits for an Agent that never starts (#9810).
+  Open the terminal in the shell you type for instead of translating the quoting: `terminal.create` takes `shell` (`git-bash`, `powershell.exe`, `pwsh.exe`, `cmd.exe`, `wsl.exe`), and only a runtime that advertises `terminal.create-shell-selection.v1` in `status.get` honours it; an older one ignores the field and starts its default.
+  The fake runtime (`orcarttest`) has no shell, so unit tests cannot show this: check a change to what the node types into Orca against the real Orca on Windows.
 
 ## herdr
 

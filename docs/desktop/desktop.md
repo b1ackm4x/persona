@@ -33,6 +33,80 @@ Preloads expose fixed operations, not arbitrary IPC, WebSocket messages, paths, 
 
 Closing the main window hides it to the tray while the signed-in renderer stays alive. The tray opens the current main window, not a destroyed setup window; explicit Quit exits. Only the desktop app itself is controlled by launch at login, not the Link service. macOS may still require approval in System Settings, which the setting must report rather than claim success.
 
+### Icons
+
+The app and its tray use the Persona helper, the same art as the iPhone, Mac and web icons; no desktop-only mark. `scripts/assets/make_icon.py desktop` makes them all from the iPhone set's `icon.png`, so replacing the art is rerunning it (the script's other modes do the same for the Apple targets).
+
+| File | Where it shows | What it is |
+| --- | --- | --- |
+| `desktop/build/icon.png` | macOS: Dock, Finder, the installer | The Mac icon (macOS's icon grid: an 824-of-1024 rounded square with its shadow), 1024 px; electron-builder makes the `.icns` |
+| `desktop/build/icon.ico` | Windows: the executable, taskbar, Start, the installer | The art in a rounded square, 16 to 256 px |
+| `desktop/src/assets/trayTemplate.png`, `trayTemplate@2x.png` | macOS menu bar | A template image (black and alpha; the menu bar colours it for light, dark and highlighted): the helper's outline thickened to read at 18 points, 1x and 2x |
+| `desktop/src/assets/tray.ico` | Windows notification area | The colour helper without its paper, 16 to 48 px (100 % to 300 % scaling) |
+| `desktop/src/assets/tray.png` | Development runs elsewhere | The colour helper, 32 px |
+
+`desktop/src/tray-icon.ts` picks the tray file by platform; `desktop/scripts/copy-assets.mjs` copies `src/assets` into `dist/assets`. `desktop/test/icons.test.ts` checks every file is there at its sizes and that `electron-builder.yml` names the app icons. The taskbar's Needs-you overlay stays the plain dot in `src/badge-art.ts`.
+
+## Island at the MacBook notch
+
+On a Mac the desktop app can show the Agents' state at the notch (#7669), as the iPhone shows it in the Dynamic Island
+(`docs/apple/live-activity.md`). It is off by default.
+
+- **Setting**: Settings › Notifications › "Show at the MacBook notch" (`web/src/views/settings/DesktopIslandSettings.tsx`),
+  shown only when the bridge has `getIsland` and answers `supported` (the desktop app on macOS). The desktop app keeps the
+  choice in its state file (`island`), as it keeps the hub's address, and draws the island again after a restart. It
+  saves the choice before applying it: one it cannot save changes nothing, and the switch says why.
+- **What it shows**: closed, a black pill around the notch: the most urgent category with its symbol and count on the left
+  (Needs you, then Working, then Unread), the next one on the right, the iPhone's preset A (`IslandCell.sides`), in the
+  iPhone island's colors. With the pointer over it, it opens downward into the agents that need you, then the working
+  ones, then the ones that finished unseen (at most five; in each state the one that entered it last first, by
+  `state_since`, so a working agent's updates do not move its row), each with its title, state and the line its
+  Agents-list row shows. A click shows the desktop window at that session through the notification-click path. With
+  nothing to count, it is hidden.
+- **Data**: the web works it out from the Agents list (`web/src/lib/desktop-island.ts`, a leaf beside
+  `AttentionSignals`) and sends it with `setIslandState` when it changes, words already in the user's language. The
+  counts and the rows come from the same list, so the pill counts no agent its list cannot show: not the Persona
+  assistant's conversations, which the Agents list leaves out, and no count ahead of its row. The shell keeps the latest
+  even while the island is off, so turning it on shows the current counts at once. No second connection to the hub.
+  The counts are the whole hub's, so the rows cover every agent too: on a hub with the paged Agents list, which pushes
+  only its first page, they come from the complete list the pins and grouping read
+  (`useFullAgentSessions`), and only while the island is on, as the web learns from `getIsland` at start and from the
+  Settings switch; the pushed page stands in until it has loaded. A row's line finds its card as the Agents list does,
+  including a question from a child session folded under it (`sessionCard`). Signing out, or a credential that stops
+  working, sends it an empty state, as signing out clears the native notices: nothing of that account stays at the notch.
+  The shell keeps a state only as long as the page that sent it: when that page is gone (a hub change destroys its
+  window, its renderer crashes), the island forgets that page's state, not one a newer page has sent since, and stays
+  hidden until a signed-in page sends its own.
+- **Shell**: `desktop/src/island.ts` draws it from a local page, in a frameless, transparent, always-on-top panel that
+  takes no focus and stays on every Space and over full-screen apps, without Electron's default of making the whole app
+  a background one for that (no Dock icon or badge; the e2e checks it). The page comes from the shell's own scheme,
+  `persona-island://app/island.html` (`island-page.ts`), which serves its three files (`island.html`, `island.css`,
+  `island.cjs`, in `dist/island/`) and nothing else. It cannot come from `file://`: with
+  `grantFileProtocolExtraPrivileges` off, a packaged app's `file://` does not reach into its asar, the page fails with
+  `ERR_FILE_NOT_FOUND` and the island's window shows nothing. The page's preload (`island-preload.cts`) has two fixed
+  operations: the pointer over it or away, and a clicked row's route. A route is checked as a notification's
+  (`contract.cts`) and must be one of the rows shown. The renderer's state is untrusted input: `island-model.ts` keeps
+  only numbers, known states, the hub's own routes and bounded text.
+- **Where**: Electron does not say where a notch is. The built-in display whose menu bar is taller than a plain one
+  (32 pt or more instead of 24) is taken to have one, about 200 pt wide at the top center; the pill is the menu bar's
+  height, with 64 pt on each side for a symbol and a count. On another display it is the same pill without the middle,
+  at the top center over the menu bar. Moving or adding displays places it again.
+- **Not yet**: the iPhone's other presets (tokens per minute, today's tokens), buttons on the island, Windows.
+
+The screenshots are on #7699, captured from the built desktop app against the synthetic hub
+(`scripts/mock/mock_hub.py`), in English; the island is always dark, as the notch is. What they show:
+
+- **Settings › Notifications**, light and dark: "Show at the MacBook notch" ("Counts of Agents that need you, are working
+  or finished, around the notch; point at it for the list") sits between "Notify this browser" and "Alert sound", off by
+  default, with "Only in the Persona desktop app on this Mac. Click a row in the list to open that Agent." under it.
+- **Closed**: a black pill around the notch, a red speech bubble and the count of Agents that need you on the left, an
+  orange gear and the count of working ones on the right.
+- **Open, the pointer over it**: the same counts on top, then one row per Agent: its title, its state in that state's
+  color ("Needs you" red, "Working" orange) and, where there is one, what it waits on or is doing ("Has a question: …",
+  "Plan awaiting approval", its latest activity).
+
+The check by a person on a real Mac is section 9 of [mac-acceptance.md](mac-acceptance.md).
+
 ## Packaging and verification
 
 `electron-builder.yml` defines universal macOS DMG/ZIP and Windows NSIS artifacts. `electron-builder.unsigned.yml` uses a temporary development app ID and explicitly disables certificate discovery/signing and notarization. It is for development only. Unsigned artifacts do not prove signed distribution, notarization or installation.
@@ -47,7 +121,7 @@ Four scenarios run, each in its own profile:
 
 - **Origin root**, against a hub that lists `desktop_unregister`: the hub's sign-in page, sign-in, then the main chat (light and dark), the Agents list, an Agent session with a waiting card, Inbox and To-dos, each captured once the hub's data is in the page's DOM. With the window closed to the tray, a new Needs-you item from the hub must produce a notification request with the session's title, tag and route, the badge the web's own count, and a click must show the window on that session. Locking withdraws the desktop registration with `unregister_desktop`; unlocking registers again.
 - **Reverse-proxy prefix**, against an older hub: the gateway answers only below the prefix and rewrites `<base>` as the hub does, and any request of the page outside the prefix fails the run. Sign-in, the chat and the Agents list load; an in-hub link meant for a new window stays in the window; an off-hub link, an off-hub navigation and the same origin outside the prefix are refused and handed to the system browser. Locking withdraws the registration by closing the socket.
-- **Hub change**, against two independent hub origins, plus **same-origin prefix to parent**, against a prefixed hub and its origin-root parent: the signed-in local window submits Continue for the second hub; the old window is destroyed before the new one loads, its desktop registration is withdrawn, and the new origin-isolated session signs in. Notification permission, presence, a native notification request and both public login-item methods cross the production preload and IPC on the new hub. Closing the original local window in the root scenario also leaves those login-item methods working.
+- **Hub change**, against two independent hub origins, plus **same-origin prefix to parent**, against a prefixed hub and its origin-root parent: the signed-in local window submits Continue for the second hub; the old window is destroyed before the new one loads, its desktop registration is withdrawn, and the new origin-isolated session signs in. Notification permission, presence, a native notification request and both public login-item methods cross the production preload and IPC on the new hub. With the island on, none of the first hub's agents stay in it after its window is gone, and the second hub's arrive once it signs in (observed on every runner; only a Mac draws it, and there the island's page, loaded from its scheme, shows the first hub's count on its black pill). Closing the original local window in the root scenario also leaves those login-item methods working.
 
 The driver, `desktop/scripts/e2e-main.mjs`, is Electron's entry point for the run and then loads the unmodified production main module. It is not part of `dist/`, so it is never packaged; it refuses to run packaged or without its switch, gives the hub renderer nothing and adds no IPC channel. It only watches or replaces the outer edge of the main process:
 
@@ -62,6 +136,8 @@ The driver, `desktop/scripts/e2e-main.mjs`, is Electron's entry point for the ru
 On a Linux machine without a display server the smoke uses Chromium's headless platform and leaves out the tray's menu, which GTK cannot build there; Linux is not a shipping platform. The smoke runs the development build, not an installed package: it does not prove installation, signing, notarization, the tray's own interactions, launch at login or an update from a published release. Generated output is cleaned before compilation so deleted tests cannot linger, and a scenario's directory is emptied before it runs. Linux/macOS development evidence does not substitute for Windows acceptance or a published-release update test.
 
 `npm --prefix desktop run smoke` remains the quick check of the first window against a hub already running at `PERSONA_HUB_URL`.
+
+`desktop/scripts/link-real-common.test.mjs` independently checks the development evidence helpers: real child close, nonzero and signal receipts, bounded POSIX process-group termination, a descendant retaining captured pipes, path redaction and provenance vetoes. Observing an empty original process group does not prove that a detached descendant has exited, so the generic process receipt does not authorize removal of the whole run root. These tests do not launch Electron or establish setup, preload, production IPC, successful Link pairing, production Quit, native notification, installation or update acceptance. The real-Link Electron driver remains separate and is not made available by this helper.
 
 ## Updates
 
@@ -123,11 +199,15 @@ Two things to know before buying anything:
 
 ### The update test
 
-`node desktop/scripts/update-test.mjs` performs a real update with no certificate and no published release. It builds a test-only package (`desktop/electron-builder.update-test.yml`) twice, as version 0.9.0 and 0.9.1, with a local feed address written into the package the same way a release's feed is; serves the new build's directory on a free loopback port; runs the **packaged** old version with a saved hub address and an isolated profile; and checks what it does. The test-only entry (`desktop/update-test/main.mjs`) records the updater's events and quits once the download is ready, then loads the real main process unchanged. It is listed only in the test configuration, and the test build has its own name so its install directory, profile and update cache never touch a real install.
+`node desktop/scripts/update-test.mjs` performs a real update with no certificate and no published release. It builds a test-only package (`desktop/electron-builder.update-test.yml`) twice, as version 0.9.0 and 0.9.1, with a local feed address written into the package the same way a release's feed is; serves the new build's directory on a free loopback port; runs the **packaged** old version with a saved hub address and an isolated profile; and checks what it does. The test-only entry (`desktop/update-test/main.mjs`) records the updater's events and quits once the download is ready, then loads the real main process unchanged. It is listed only in the test configuration, and the test build has its own name so its install directory and profile never touch a real install. Each run uses one random test-only identity for its package name, app ID and explicit NSIS GUID, stable between that run's two versions; electron-builder writes the derived updater cache name into `app-update.yml`, and the harness reads it back. The two exact per-run NSIS registry keys must not exist before installation and are checked after cleanup; the disposable package creates no desktop or Start-menu shortcuts. Its entry records `dirname(app.getPath("exe"))` as the running executable directory, compares it with the harness-owned installation directory passed only through the run-scoped `PERSONA_UPDATE_TEST_EXECUTABLE_DIR` environment value, and keeps electron-updater's optional `installDirectory` as `updaterInstallDirectory` for diagnostics. Locked electron-updater does not assign that optional property; it is not evidence of NSIS's destination. The harness never assigns the expected directory to the updater. NSIS chooses its destination through the run GUID's `HKCU\\Software\\<run GUID>\\InstallLocation` and optional `/D`; after the reopened new version and current-feed checks, the harness requires the exact per-run `InstallLocation` to match its actual destination. The instrumentation forwards the updater's complete argument list unchanged. The per-run macOS bundle ID likewise keeps Squirrel's cache and launchd job separate; the job must be absent before launch and is individually removed after the run, with a failure if it remains registered. All platform cache bases, that run's Squirrel cache and the updater-launched AppImage's default profile are under its temporary HOME, with `CFFIXED_USER_HOME` set for macOS processes. Cleanup is restricted to those owned paths and native keys/jobs and its failures make the run fail separately from the update result. A failed final event snapshot is itself a receipt failure, but cannot skip cleanup or report writing. A run deadline rejects into the same cleanup/report path rather than exiting directly; cleanup has its own bounded deadline. A result-report write failure returns a controlled nonzero verdict. `desktop/scripts/update-test-cache.test.mjs` checks the identity derivation and preservation of the unsigned development cache, a concurrent run's cache/ShipIt/profile and unrelated HOME content using only temporary sentinels; it does not exercise a real HOME, registry, launchd job or install.
+
+The exported helpers in `desktop/scripts/update-test-receipts.mjs` read `app-update.yml` from `win-unpacked/resources`, `mac/Persona Update Test.app/Contents/Resources` on x64, `mac-arm64/Persona Update Test.app/Contents/Resources` on arm64, or `linux-unpacked/resources`. On macOS there is no additional `resources` component below `Contents/Resources`. Focused tests use new temporary files to check those exact paths for both macOS architectures and reject missing configs and misplaced decoys. Event tests use the production watcher against real asynchronous `update-test.jsonl` writes: a delayed matching event, a missing event until the deadline, an event from the wrong executable directory, and a matching append after early nonmatching events. The watcher awaits the file read and event before checking the receipt, propagates read/malformed-record failures, and retries an unfinished final line. Its polling sleep accepts the run's cancellation signal and stops reading after cancellation. `desktop/scripts/update-test-native.mjs` keeps native command access behind the existing injected runner; bounded doubles cover exact GUID queries, `InstallLocation` parsing, explicit not-found output, access-denied failures, per-key cleanup and the per-run ShipIt job. None of these unit tests invokes `reg`, PowerShell, `launchctl`, an installer or an installed app, and none assigns the expected directory to the updater.
+
+`desktop/scripts/update-test-lifecycle.mjs` gives main a 70-minute inner deadline, leaving the 80-minute hosted job time for process shutdown, three-minute bounded cleanup and report upload. On deadline it first stops owned children; if the real main promise does not settle, it aborts cooperative waits and waits again. Cleanup cannot start uninstalling or deleting paths until main and every tracked direct child, including a Windows `taskkill`, have emitted `close`. A command timeout or abort therefore settles only after close, not on `exit` or a kill request. If main refuses to settle, the harness exits nonzero and preserves its run paths instead of deleting files under live work. A cleanup deadline prevents later cleanup phases/retries and records the unconfirmed work as a failure; it does not claim to cancel or roll back an already-started filesystem operation. These helpers and their process doubles prove JavaScript ordering, timer disposal and nonzero failure propagation, not real `taskkill` tree membership, detached descendants, native installer completion or OS file-lock release.
 
 | System | What is checked |
 | --- | --- |
-| Windows (hosted runner) | Silent per-user NSIS install of the old version into a temporary directory; the app finds the new version, downloads it, and the file's SHA-512 equals the metadata's; quitting installs it; the reopened app reports the new version and finds nothing newer; then uninstall. |
+| Windows (hosted runner) | Silent per-user NSIS install of the old version into a temporary directory; the app finds the new version, downloads it, and the file's SHA-512 equals the metadata's; the awaited NSIS event's actual executable directory must be the owned destination; quitting installs it; the reopened app reports the new version and finds nothing newer; the exact run-GUID `InstallLocation` must match; then uninstall. |
 | macOS (hosted runner) | The old version runs from its ZIP with an ad-hoc signature (no certificate). It finds the new version and downloads the ZIP, whose SHA-512 equals the metadata's. The test then follows Squirrel.Mac's own verdict rather than the download event: on the hosted runner Squirrel.Mac refuses the file ("did not pass validation: code failed to satisfy specified code requirement(s)"), and the test reports that refusal instead of an install. Had it accepted, the test would require the install and the reopened version as on Windows. |
 | Linux (AppImage) | The same as Windows through an AppImage, under Xvfb. The product ships no Linux package; this exercises the shared feed, differential download and checksum code where no macOS or Windows computer is available. |
 
@@ -214,6 +294,9 @@ claim](https://github.com/nwverse/persona/issues/6770#issuecomment-6873777179) o
 This audit preserves that old report; it neither re-runs it nor claims that #7442 fixed it. A preconfigured-hub update test
 passing is not first-install acceptance. Do not relax fuses or the existing origin/IPC boundaries to make this evidence look
 green.
+
+The notch island's page failed the same way in every packaged app, not only on a first run: its window was on screen and
+empty. It now loads from its own scheme ("Island at the MacBook notch"); the setup page's path is still the claim's above.
 
 ## Owner actions and decisions still required
 

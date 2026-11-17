@@ -1,5 +1,6 @@
 // Overview: what needs you, what is running, what just finished — Beautiful UI's Task Rows — and the computers.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SESSIONS_HIERARCHY_FEATURE } from "../lib/child-sessions";
 import { homeKey } from "../lib/folded-rows";
 import { ago, interactionCanAnswer, sessionCan, sessionPreview, shortDuration, sourceSubtitle, sessionTitle, stateOf, tabLabel } from "../lib/format";
 import { usePendingLine } from "../lib/card-answer";
@@ -8,6 +9,8 @@ import { interactionAsk } from "../lib/inbox";
 import { interactionKicker } from "../lib/row-line";
 import { answerLines, type Resolution } from "../lib/answered";
 import { quickAnswers, withHeld, type HeldRow, type QuickChoice } from "../lib/quick-answers";
+import { cardTapKey } from "../lib/card-tap-key";
+import { currentViewId, TapGuardSurface, useTapGuard, useTapGuardView } from "../lib/tap-guard";
 import { optionDisplay, permissionDetail } from "../lib/tool-detail";
 import { cardToolName } from "../lib/turns";
 import { plainMarkdown } from "../lib/plain-markdown";
@@ -29,6 +32,7 @@ import { BUSY_MOTION, spinStyle } from "../lib/busy-motion";
 import type { AgentState, Interaction, Machine, Session } from "../lib/types";
 import { Button, Collapse, cx, EASE, IconButton, Loading, useNow } from "../ui/atoms";
 import { RecommendedTag } from "../ui/RecommendedTag";
+import { Tag } from "./assistant/parts";
 import { StatusMark } from "../ui/StatusMark";
 import { Icon } from "../ui/icons";
 import { MarkSeenDialog } from "./AgentMenus";
@@ -45,6 +49,8 @@ function greeting() {
 }
 
 export function Home({ onNewAgent, onToggleSidebar }: { onNewAgent: () => void; onToggleSidebar: () => void }) {
+  // stamp the opened overview before its first rows are read: a row arriving later is judged against the open-grace
+  useTapGuardView(overviewTapSurface, currentViewId());
   // with several assistants, the current one's computers, cards, agents and tasks (docs/assistant/managers.md "Clients")
   const machines = useScopedMachines();
   const interactions = useScopedInteractions();
@@ -61,6 +67,18 @@ export function Home({ onNewAgent, onToggleSidebar }: { onNewAgent: () => void; 
   // may not have been read yet, or its read failed: then nobody knows how many agents there are, and the page says so
   // instead of counting none. `whole`: it holds every agent, so each computer's can be counted.
   const { status: list, whole } = useScopedAgentListStatus();
+  // Only hierarchy hubs receive the roots counts that exclude folded children and Assistant conversations.
+  const hubAgentCounts = useStore((s) => s.features.includes(SESSIONS_HIERARCHY_FEATURE)
+    ? s.sessionCounts?.active_agents_by_machine : undefined);
+  const agentCounts = useMemo(() => {
+    if (list !== "loaded") return undefined;
+    if (!whole) return hubAgentCounts && new Map(Object.entries(hubAgentCounts));
+    const byMachine = new Map<string, number>();
+    for (const s of agentSessions) {
+      if (stateOf(s) !== "offline") byMachine.set(s.machine_id, (byMachine.get(s.machine_id) ?? 0) + 1);
+    }
+    return byMachine;
+  }, [list, whole, hubAgentCounts, agentSessions]);
   const now = useNow(5000, counts.working > 0);
 
   // the agents of one herdr tab are one row (#2320), filed under the most urgent of them; a card waiting counts as
@@ -187,7 +205,7 @@ export function Home({ onNewAgent, onToggleSidebar }: { onNewAgent: () => void; 
               title={t("home.tasks")}
               count={tasks.total}
               right={tasks.total > tasks.rows.length && <a href={href({ name: "todos" })} onClick={(e) => onLinkClick(e, { name: "todos" })} className="text-[12px] text-ink-3 hover:text-ink-2">{t("home.tasks_all")}</a>}
-              grid
+              grid="tasks"
             >
               {tasks.rows.map((r) => (
                 <TaskCard key={r.todo.id} task={r} />
@@ -235,10 +253,8 @@ export function Home({ onNewAgent, onToggleSidebar }: { onNewAgent: () => void; 
             <Group title={t("home.computers")} count={machines.length} right={<a href={href({ name: "machines" })} onClick={(e) => onLinkClick(e, { name: "machines" })} className="text-[12px] text-ink-3 hover:text-ink-2">{t("home.monitor")}</a>}>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 @min-[60rem]:grid-cols-3 @min-[84rem]:grid-cols-4 @min-[110rem]:grid-cols-5">
                 {machines.map((m) => {
-                  const mine = m.online ? sessions.filter((s) => s.machine_id === m.id && stateOf(s) !== "offline") : [];
-                  // its agents' count only from a list that holds them all: "0 agents" for a list that never came, or
-                  // a count of the first pages only, would be wrong (the Machines page counts the complete list)
-                  const line = m.online ? [whole && t("home.machine_agents", { count: mine.length }), m.system?.name].filter(Boolean).join(" · ") || t("home.online") : offlineLine(m);
+                  const count = agentCounts && (agentCounts.get(m.id) ?? 0);
+                  const line = m.online ? [count !== undefined && t("home.machine_agents", { count }), m.system?.name].filter(Boolean).join(" · ") || t("home.online") : offlineLine(m);
                   const hub = hubLabel(m, machines);
                   const detail = { name: "machine" as const, mid: m.id };
                   return (
@@ -289,10 +305,12 @@ function MarkAllSeen({ count, onClick }: { count: number; onClick: () => void })
 // answering) only once each still has room for its question and buttons.
 const GRID = {
   rows: "grid grid-cols-1 items-start gap-1.5 @min-[60rem]:grid-cols-2 @min-[100rem]:grid-cols-3",
+  // task cards differ in height (a stage bar or not): a row stretches them to one height, the agent line at the bottom
+  tasks: "grid grid-cols-1 items-stretch gap-1.5 @min-[60rem]:grid-cols-2 @min-[100rem]:grid-cols-3",
   cards: "grid grid-cols-1 items-start gap-1.5 @min-[84rem]:grid-cols-2 @min-[120rem]:grid-cols-3",
 };
 
-function Group({ title, count, children, right, hint, grid }: { title: string; count: number; children: React.ReactNode; right?: React.ReactNode; hint?: string; grid?: true | "cards" }) {
+function Group({ title, count, children, right, hint, grid }: { title: string; count: number; children: React.ReactNode; right?: React.ReactNode; hint?: string; grid?: true | "cards" | "tasks" }) {
   return (
     <section>
       <div className={cx("flex items-baseline gap-2", hint ? "mb-1" : "mb-2.5")}>
@@ -316,21 +334,27 @@ function TaskCard({ task: { todo, status, agents } }: { task: HomeTask }) {
   const orphan = status !== "needs_you" ? orphanedLine(todo) : undefined;
   const line = [held && t(`todos.delivery_${held.state}`), agents > 0 && t("todos.agent_count", { count: agents })].filter(Boolean).join(" · ");
   return (
-    <div className="flex flex-col gap-2 rounded-card bg-surface px-3 py-2.5 shadow-card" data-task={todo.id}>
+    <div className="flex h-full flex-col gap-2 rounded-card bg-surface px-3 py-2.5 shadow-card" data-task={todo.id}>
       <div className="flex min-w-0 items-center gap-2">
         <a href={href(to)} onClick={(e) => onLinkClick(e, to)} className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink hover:underline">
           {todo.title}
         </a>
+        {todo.kind === "concern" && <Tag><span data-testid="todo-concern">{t("todos.concern")}</span></Tag>}
         <span className={cx("inline-flex h-5 shrink-0 items-center rounded-full bg-field px-1.5 text-[11px] font-medium whitespace-nowrap", TODO_TONE_CLASS[TODO_STATUS_INFO[status].tone])}>{todoStatusLabel(todo, status)}</span>
       </div>
       <TodoStageBar stage={todo.stage} stageKind={todo.stage_kind} prURL={todo.pr_url} />
-      {line && <p className={cx("truncate text-[11.5px]", held ? "text-orange" : "text-ink-3")}>{line}</p>}
-      {/* nobody is working on it (#3618): the hub's finding and why; a card that waits for the user says that instead */}
-      {orphan && (
-        <p data-orphaned-line className="truncate text-[11.5px] text-ink-3">
-          <span className="font-medium text-orange">{orphan.lead}</span>
-          {orphan.reason && <> · {orphan.reason}</>}
-        </p>
+      {/* the lines under the stage bar sit at the card's bottom, so a row of cards of one height lines up */}
+      {(line || orphan) && (
+        <div className="mt-auto flex flex-col gap-2">
+          {line && <p className={cx("truncate text-[11.5px]", held ? "text-orange" : "text-ink-3")}>{line}</p>}
+          {/* nobody is working on it (#3618): the hub's finding and why; a card that waits for the user says that instead */}
+          {orphan && (
+            <p data-orphaned-line className="truncate text-[11.5px] text-ink-3">
+              <span className="font-medium text-orange">{orphan.lead}</span>
+              {orphan.reason && <> · {orphan.reason}</>}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -409,6 +433,7 @@ function ContinueAction({ s, title, several }: { s: Session; title: string; seve
   const [failed, setFailed] = useState<{ id: string; why: string } | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
+  const attempt = useRef(0);
   useEffect(() => {
     if (!to && refocus.current) {
       refocus.current = false;
@@ -423,13 +448,16 @@ function ContinueAction({ s, title, several }: { s: Session; title: string; seve
     const words = text.trim();
     if (!to || !words || phase === "sending") return;
     const { machine_id: mid, session_id: sid } = to;
+    const attempted = attempt.current;
     setPhase("sending");
     // the line again after a failure is the outbox's Retry of that message (same id while the hub never answered, so
     // it goes in once); changed, the old one is dropped and this one goes as new
     const prev = failed && outboxEntry(mid, sid, failed.id);
     if (prev && prev.text !== words) discardOutbox(mid, sid, prev.id);
     const r = prev?.state === "failed" && prev.text === words ? retryOutboxEntry(mid, sid, prev.id) : queueToSession(mid, sid, { text: words });
-    if (await r.sent) {
+    const ok = await r.sent;
+    if (attempted !== attempt.current) return;
+    if (ok) {
       setFailed(null);
       setText("");
       setPhase("sent");
@@ -465,7 +493,7 @@ function ContinueAction({ s, title, several }: { s: Session; title: string; seve
         </form>
       ) : (
         <div className="flex">
-          <Button tone="secondary" icon="send" onClick={() => { setTo(s); setPhase("idle"); }}>
+          <Button tone="secondary" icon="send" onClick={() => { attempt.current++; setTo(s); setPhase("idle"); }}>
             {t("home.continue")}
             {/* every row has one: the row's title tells them apart to a screen reader */}
             <span className="sr-only">{t("home.continue_label", { title })}</span>
@@ -482,13 +510,22 @@ function ContinueAction({ s, title, several }: { s: Session; title: string; seve
 
 const ANSWERED_HOLD_MS = 1600;
 
+/** The overview's rows share one guard surface (#8161): opening Overview exempts its first rows for this grace. */
+const overviewTapSurface = new TapGuardSurface(1000);
+
+/** Tests: the module-level surface outlives any one render, so each test starts with a freshly opened overview. */
+export function resetOverviewTapGuardForTest(): void {
+  overviewTapSurface.reset();
+}
+
 /** A row's one-tap answers (lib/quick-answers.ts), under its words; the one being sent spins, the others wait. An answer
  *  on its way from anywhere (this row, the chat's card, a notification) holds them all too, also after leaving Overview
  *  and coming back, and the row says which one, as the chat's card does (#2793). */
 function QuickAnswers({ ix, choices, sending, onPick }: { ix: Interaction; choices: QuickChoice[]; sending?: string; onPick: (c: QuickChoice) => void }) {
   const { pending, line } = usePendingLine(ix);
+  const { ref } = useTapGuard(overviewTapSurface, `${ix.id}${cardTapKey(ix)}`, currentViewId(), "button");
   return (
-    <div className="flex flex-wrap gap-1.5 px-3 pb-2 pl-10.5">
+    <div ref={ref} className="flex flex-wrap gap-1.5 px-3 pb-2 pl-10.5">
       {line && <p data-row-pending role="status" className="basis-full truncate text-[12px] text-ink-2">{line}</p>}
       {choices.map((c) => {
         const shown = optionDisplay(c.label);
